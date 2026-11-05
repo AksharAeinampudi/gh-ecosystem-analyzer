@@ -1,23 +1,25 @@
 # GitHub Ecosystem Analyzer — Spec
 
-Status: draft v0.1 (2026-11-04). This is the source of truth for scope, data model, API and milestones. Change this file first, then change the code.
+Status: draft v0.2 (2026-11-04). This is the source of truth for scope, data model, API and milestones. Change this file first, then change the code.
 
 ## 1. Purpose
 
 Show which technologies on GitHub are gaining or losing momentum. The unit of analysis is a **language** or a **topic**, not a repo, user or org. Repos appear only as the top drivers of a trend.
 
+**Dataset:** a fixed historical period, **2025-01-01 → 2025-09-30** (UTC). This is the stretch where GH Archive coverage is stable enough to compare (see §8a). Data after that date is not used in v1.
+
 ### Questions it answers
 
-1. Which languages and topics gained the most activity in the last 30, 60 or 90 days, compared with the period before?
+1. Which languages and topics grew their **share of GitHub activity** the most over 30, 60 or 90 days, compared with the period before? The windows end on a chosen date, by default the last day of the dataset.
 2. Which ones are declining?
-3. For a given language or topic, what does daily activity (stars, forks, pushes, PRs, issues) look like over time?
+3. For a given language or topic, what does daily activity (stars, forks, pushes, PRs, issues) and its share look like over time?
 4. Which repos drove that change?
-5. How fresh is the data? (date of the latest day ingested)
+5. Which period does the data cover? (the earliest and latest ingested days)
 
 ### Non-goals
 
 - User accounts, auth or saved views
-- Real-time or streaming updates (data is refreshed daily)
+- Real-time or streaming updates. v1 is a fixed 2025 snapshot. A live mode built on daily `stargazerCount` snapshots is a possible Phase 2 (§9).
 - ML forecasting
 - Covering every GH Archive event type
 - Analyzing one repo's dependency tree, a single user or org, package dependents, or contributor overlap (possible later phase)
@@ -39,7 +41,7 @@ Hourly files at `https://data.gharchive.org/YYYY-MM-DD-H.json.gz` (H = 0..23, no
 
 All other event types are skipped. A repo is keyed by `repo.id`, which survives renames. `repo.name` is kept as the latest known `owner/name`.
 
-**Volume:** one hourly file is roughly 50–150 MB gzipped. 180 days is over 4,000 files and on the order of 100+ GB downloaded. Ingestion must stream each file (download, decompress, filter and aggregate in a single pass) and never store raw events. Check the per-hour size during M1 and adjust the backfill plan to match.
+**Volume:** a 2025 day is about 0.6–1 GB gzipped (24 hourly files), so the 273-day dataset is roughly 200 GB downloaded. Ingestion must stream each file (download, decompress, filter and aggregate in a single pass) and never store raw events. The backfill is a one-time job and can run in chunks, because finished days are skipped.
 
 ### GitHub GraphQL API (`GITHUB_TOKEN`)
 
@@ -56,6 +58,8 @@ All dates are UTC days.
 repos (
   repo_id        BIGINT PRIMARY KEY,      -- GitHub repo id from GH Archive
   full_name      TEXT NOT NULL,           -- latest known owner/name
+  name_seen_day  DATE NOT NULL,           -- day full_name was seen; out-of-order backfills
+                                          -- never overwrite a newer name with an older one
   language       TEXT,                    -- NULL until enriched or if none
   topics         TEXT[] NOT NULL DEFAULT '{}',
   stars_total    INTEGER,                 -- from enrichment, for display only
@@ -103,24 +107,33 @@ Millions of repos have at least one event per day, so storing a row per active r
 
 Both the threshold and `N` are config values, and M1/M2 should measure the row counts they produce before we commit to them.
 
-**Retention:** 180 days, because the 90-day window compares the last 90 days with the 90 days before.
+**Retention:** the whole dataset (2025-01-01 → 2025-09-30). Nothing rolls off, because the period is fixed.
 
 ## 4. Momentum score
 
+Momentum is measured by **share of total activity**, not by raw totals. GH Archive's collection volume changed during 2025: every event type dropped about 38% at once in June. Raw growth would read that as every language collapsing. Shares cancel a uniform change like that out, and "gaining relative to the rest of GitHub" is the more meaningful question anyway.
+
 ```
-activity(day)  = stars + 2·forks + 0.5·pushes          (weights v1: a guess)
-A_cur          = Σ activity over the last W days
-A_prev         = Σ activity over the W days before that
-momentum       = (A_cur − A_prev) / max(A_prev, FLOOR)
+activity(repo, day) = stars + 2·forks + 0.5·pushes        (weights v1: a guess)
+
+For a language or topic x, a window of W days ending on as_of, and the W days before it:
+A_cur(x), A_prev(x) = Σ activity of tracked repos in x over each window
+T_cur, T_prev       = Σ activity of ALL tracked repos over each window (each repo counted once)
+
+share_cur(x)  = A_cur(x)  / T_cur
+share_prev(x) = max(A_prev(x), FLOOR) / T_prev
+momentum(x)   = share_cur(x) / share_prev(x) − 1
 ```
 
-- `W` is the range picker value, 30, 60 or 90 (default 30). v1 as originally stated is `W = 30`.
+- `W` is the range picker value: 30, 60 or 90 (default 30).
+- `as_of` defaults to the last ingested day. Both windows must fit inside the dataset, so the earliest `as_of` is the dataset start + 2·W − 1 days (2025-06-29 for W = 90).
 - `FLOOR` (default 100) stops tiny languages or topics from showing +5000% growth.
 - Languages or topics with fewer than `MIN_REPOS` (default 20) active tracked repos in the current window are left out of the leaderboard.
-- The window ends at the **latest fully ingested day**, never at today.
+- Repos with no language (`NULL`) still count toward `T`. Topic totals overlap (one repo, many topics), but `T` is still the plain total over repos.
 - PRs and issues are stored and charted but carry no weight in v1.
 
 **Things to check against real data (M3):**
+- **Is the share series continuous across 2025-06?** If the June drop was not uniform across languages, a step in a language's share would show up there. If it does, restrict comparisons to windows that don't cross the step (Jan–May or Jun–Sep).
 - Do pushes dominate? Bots and CI repos can push hundreds of times a day. Options: cap pushes per repo per day, or drop actors whose login ends in `[bot]`.
 - Is the leaderboard stable if the weights change by ±50%? If the ranking flips, the weights matter and need a justification.
 - Does a single viral repo dominate a small language? Possibly cap any one repo's share of `A_cur`.
@@ -130,14 +143,14 @@ momentum       = (A_cur − A_prev) / max(A_prev, FLOOR)
 
 FastAPI, JSON only, prefix `/api/v1`. Language and topic names are passed as **query params**, because names like `C++`, `C#` and `Jupyter Notebook` are awkward in paths.
 
-Shared params: `dimension` = `language` | `topic`, `window` = `30` | `60` | `90` (default 30).
+Shared params: `dimension` = `language` | `topic`, `window` = `30` | `60` | `90` (default 30), `as_of` = a date (optional, defaults to the latest day; see §4 for the allowed range).
 
 ### `GET /health`
 `{"status": "ok"}` and a check that the DB is reachable.
 
 ### `GET /api/v1/meta`
 ```json
-{ "latest_day": "2026-11-03", "earliest_day": "2026-05-08",
+{ "earliest_day": "2025-01-01", "latest_day": "2025-09-30",
   "windows": [30, 60, 90], "tracked_repos": 25000,
   "weights": {"stars": 1, "forks": 2, "pushes": 0.5} }
 ```
@@ -145,20 +158,22 @@ Shared params: `dimension` = `language` | `topic`, `window` = `30` | `60` | `90`
 ### `GET /api/v1/leaderboard?dimension=language&window=30&limit=20&order=desc`
 `order=desc` gives gainers and `asc` gives decliners.
 ```json
-{ "dimension": "language", "window": 30, "as_of": "2026-11-03",
+{ "dimension": "language", "window": 30, "as_of": "2025-09-30",
   "items": [
     { "rank": 1, "name": "Zig", "momentum": 0.42,
+      "share_current": 0.0031, "share_previous": 0.0022,
       "activity_current": 18234.5, "activity_previous": 12840.0,
       "active_repos": 311 }
   ] }
 ```
 
 ### `GET /api/v1/timeseries?dimension=language&name=Rust&window=90`
-Daily points covering the current window plus the previous one (so 2·W days), letting the chart show both periods.
+Daily points covering the current window plus the previous one (so 2·W days), letting the chart show both periods. `share` is that day's activity divided by the day's total over all tracked repos; the dashboard charts it by default.
 ```json
-{ "name": "Rust", "dimension": "language",
-  "points": [ { "day": "2026-08-06", "stars": 0, "forks": 0, "pushes": 0,
-                "prs_opened": 0, "issues_opened": 0, "activity": 0.0 } ] }
+{ "name": "Rust", "dimension": "language", "as_of": "2025-09-30",
+  "points": [ { "day": "2025-04-04", "stars": 0, "forks": 0, "pushes": 0,
+                "prs_opened": 0, "issues_opened": 0, "activity": 0.0,
+                "share": 0.0 } ] }
 ```
 
 ### `GET /api/v1/top-repos?dimension=language&name=Rust&window=30&limit=10`
@@ -169,7 +184,7 @@ The repos ranked by their contribution to the change (`A_cur − A_prev` for tha
                "stars_total": 0, "url": "https://github.com/owner/repo" } ] }
 ```
 
-Errors: unknown `dimension` or `window` gives 422 (FastAPI validation). An unknown `name` gives 404.
+Errors: an unknown `dimension` or `window`, or an `as_of` outside the allowed range, gives 422. An unknown `name` gives 404.
 
 ## 6. Architecture summary
 
@@ -180,7 +195,7 @@ GitHub GraphQL ──► enrich (tracked set) ──► repos.language / topics
                                   FastAPI ──► React dashboard
 ```
 
-The README has the full diagram. A scheduler (GitHub Actions cron, M5) runs ingest → enrich → rollup once a day.
+The README has the full diagram. For the fixed 2025 dataset, ingest → enrich → rollup runs once, as a backfill. A daily schedule only comes back if Phase 2 (live mode) is built.
 
 ## 7. Milestones
 
@@ -195,23 +210,24 @@ The README has the full diagram. A scheduler (GitHub Actions cron, M5) runs inge
 - GraphQL enrichment with batching, rate-limit backoff, and handling for not-found or renamed repos.
 - Rollup SQL that rebuilds `language_daily` and `topic_daily`.
 - Momentum query in SQL, unit-tested on a hand-built dataset with known answers.
-- **Done when:** a SQL query returns a believable language leaderboard for a backfilled 60-day range.
+- Backfill 2025-01-01 → 2025-09-30. It can start with Mar–May (enough for W = 30 and 60) and grow from there.
+- **Done when:** a SQL query returns a believable share-based language leaderboard for the backfilled range.
 
 ### M3 — API + weight validation
 - All §5 endpoints. Integration tests against a test database seeded with fixtures.
-- Weight analysis script: compare rankings under different weights and push caps (§4). Write the decision in §8.
+- Weight analysis script: compare rankings under different weights and push caps, and check that shares stay continuous across June 2025 (§4). Write the decisions in §8.
 - **Done when:** the endpoints are documented at `/docs` (OpenAPI), tests pass, and the weights are justified.
 
 ### M4 — Dashboard
-- Vite + React + TS + Recharts: leaderboard (language/topic toggle, gainers/decliners), time series for the selected item (current vs previous window), top repos table, 30/60/90 picker, "data as of" label.
+- Vite + React + TS + Recharts: leaderboard (language/topic toggle, gainers/decliners), time series for the selected item (share by default, raw counts as a toggle, current vs previous window), top repos table, 30/60/90 picker, an "as of" date control limited to the dataset, and a visible note that the data is a 2025 snapshot and why.
 - Loading, error and empty states; usable on a phone-width screen.
 - **Done when:** every §1 question can be answered from the UI.
 
-### M5 — Deploy + schedule
-- Dockerfiles (API serves the built frontend, or two services), deploy to Fly.io or Render with a hosted Postgres.
-- GitHub Actions: CI (ruff, pytest, frontend build) on PRs, plus a daily cron running ingest → enrich → rollup, with `GITHUB_TOKEN` and the DB URL as repo secrets.
-- README: live link, screenshots, architecture, and how momentum is computed.
-- **Done when:** the public URL shows data that is at most 2 days old without any manual steps.
+### M5 — Deploy
+- Dockerfiles (API serves the built frontend, or two services), deploy to Fly.io or Render with a hosted Postgres loaded from the local backfill (`pg_dump` of the slim tables).
+- GitHub Actions: CI (ruff, pytest, frontend build) on PRs.
+- README: live link, screenshots, architecture, how momentum is computed, and the GH Archive coverage finding (§8a), which shows real data-quality work.
+- **Done when:** the public URL serves the full 2025 dataset, and CI runs on every PR.
 
 ## 8. Decisions log
 
@@ -220,9 +236,74 @@ The README has the full diagram. A scheduler (GitHub Actions cron, M5) runs inge
 | 2026-11-04 | Raw SQL with psycopg 3, no ORM | The queries are analytical, and SQL is the interesting part |
 | 2026-11-04 | Momentum v1 weights 1 / 2 / 0.5 | Starting guess, to be validated in M3 |
 | 2026-11-04 | Names passed as query params, not path segments | `C++`, `C#`, and names with spaces |
+| 2026-11-04 | Ingest unit of work = one UTC day, written by replacing that day's rows | The daily threshold needs the whole day; replacing makes re-runs idempotent |
+| 2026-11-04 | A 404 for an hour that ended less than 6h ago is `failed`, not `missing` | GH Archive publishes with a delay; don't mark an hour missing too early |
+| 2026-11-04 | Dataset fixed to 2025-01-01 → 2025-09-30; no daily refresh in v1 | Coverage scan (§8a): stars unreliable from Oct 2025, erratic from Aug 2026 |
+| 2026-11-04 | Momentum = relative change in share of total activity, not raw growth | Cancels the uniform June 2025 volume drop; measures growth relative to the ecosystem |
+| 2026-11-04 | API takes an optional `as_of` date | With a fixed dataset, exploring different end dates is the main way to look at trends |
+
+## 8a. M1 measurements (2026-11-04)
+
+Single 15:00 UTC hours sampled with stdlib `json`. Parsing one 19 MB hour took about 2.6 s.
+
+| Hour | Events | WatchEvent (stars) | PushEvent | PRs opened |
+|---|---|---|---|---|
+| 2024-10-01 | 260,103 | 8,496 | 149,741 | 10,280 |
+| 2025-06-02 | 158,437 | 5,278 | 90,755 | 7,110 |
+| 2025-10-06 | 168,794 | 4,458 | 95,872 | — |
+| 2026-01-05 | 153,215 | 3,062 | 107,569 | — |
+| 2026-04-06 | 158,506 | 3,146 | 113,325 | — |
+| 2026-07-06 | 164,328 | 57 | 147,029 | — |
+| 2026-10-01 | 85,569 | 361 | 64,617 | 1,217 |
+| 2026-10-20 | 55,085 | 226 | 42,730 | — |
+| 2026-10-26 | 2,780 | 194 | 0 | — |
+| 2026-11-02 | 4,630 | 313 | 0 | — |
+
+On 2026-11-04, 2026-10-26-03 and 2026-11-03-09 returned 404. A HEAD scan a few hours later found both present, so GH Archive publishes some hours late (see §9).
+
+### Coverage scan (2026-11-04)
+
+Made with `backend/scripts/coverage_scan.py`; `coverage_report.py` prints the full tables. The scan downloaded the 16:00 UTC hour once a week from 2025-01-06 to 2026-05-31, then every day to 2026-11-03 (229 hours), plus HEAD requests for every hour since 2026-06-01. Monthly medians per sampled hour:
+
+| Period | Events | Stars | Forks | Pushes | PRs opened | What changed |
+|---|---|---|---|---|---|---|
+| 2025-01 → 05 | ~265k | ~8.8k | ~2.5k | ~155k | ~11.3k | Stable baseline |
+| 2025-06 → 09 | ~163k | ~5.0k | ~1.3k | ~94k | ~7.3k | Everything fell ~38% at once, so the mix stayed the same |
+| 2025-10 → 2026-01 | ~150k | ~2.4k | ~0.6k | ~100k | ~3.9k | Stars, forks and PRs fell ~50% more while pushes held steady, so the mix shifted |
+| 2026-02 → 05 | ~153k | 280–1.8k | 60–440 | 110–127k | 0.4–2.5k | Stars keep decaying; pushes grow |
+| 2026-06 → 08 | ~160k | ~50–150 | ~10–40 | ~140k | ~100–200 | Stars down ~99% from the baseline; push payloads no longer carry `commits` |
+| 2026-08-18 → now | 1k–135k | 100–8.6k | erratic | often **0** | erratic | Unstable: pushes vanish for days, bursty days run up to 2 GB |
+
+Conclusions:
+1. The only window where both the volume and the mix of events are stable is **2025-01 → 2025-05**. 2025-06 → 2025-09 has the same mix at a lower volume.
+2. Since about October 2025, star and fork counts no longer track real GitHub activity. Momentum built on GH Archive stars is not valid from then on.
+3. A uniform drop like June 2025's breaks absolute growth but not **share of total**. If momentum compares a language's share of all activity in each window instead of raw totals, the comparison survives across the June 2025 step, which gives a usable range of 2025-01 → 2025-09.
+4. A live daily dashboard can't rely on GH Archive for stars. It would need another source, such as option (b) in §9.
+5. Late Oct 2026 files are about 100 MB/day, so a daily pull is cheap. Jan 2025 days are about 0.8–1 GB/day, so a 9-month backfill is roughly 200 GB of downloads.
+
+### Full-day dry run: 2025-03-12
+
+`python -m ingest.gharchive --dry-run`, all 24 hours on a laptop:
+
+| Metric | Value |
+|---|---|
+| Wall time | 272 s, so the 273-day backfill is **~21 h** sequential |
+| Events seen / counted | 6,005,191 / 4,374,348 (0 bad lines) |
+| Repos with any counted event | 895,712 |
+| Rows kept (≥1 star or fork) | 131,108 → **~36M rows** for the dataset |
+| Rows with ≥2 / ≥5 / ≥10 / ≥50 stars | 24,398 / 6,685 / 3,361 / 307 |
+| Share of each kind the kept rows cover | stars 100%, forks 100%, **pushes 3.5%**, PRs 13.7%, issues 21.2% |
+
+Peak memory was not captured; the measurement call returned 0. A rough estimate for 0.9M repo entries is a few hundred MB.
+
+**Problem found: the per-day threshold distorts pushes, PRs and issues.** A tracked repo's pushes only count on days it also gets a star or fork, so 96.5% of pushes are dropped and the push term in `activity` is biased toward star days. See §9 for the fix.
 
 ## 9. Open questions
 
-- Tracked-set size `N` and the daily threshold: settle after measuring in M1/M2.
-- Backfill cost: 180 days of downloads may be slow on a laptop. Fallback: backfill a shorter range first (e.g. 60 days, which only supports the 30-day window) and grow it daily.
+- ~~Data source after the GH Archive drop~~ Resolved 2026-11-04: a fixed 2025 dataset with share-based momentum (§1, §4, §8).
+- **Phase 2 (optional): live mode.** Take daily `stargazerCount` snapshots of the tracked repos through GraphQL, about 500 queries a day for 25k repos, and use the day-to-day difference as stars per day. History starts the day the job does, so the 90-day comparison would only work after about 6 months.
+- Hours marked `missing` can appear later. Should ingest re-check `missing` hours for a few days instead of treating them as final? (Mostly a Phase 2 concern; the 2025 backfill can simply be re-run.)
+- **Per-day threshold drops most pushes, PRs and issues (§8a dry run). Blocks M2.** Proposed fix: ingest writes a compact daily aggregate file for *all* repos, `data/daily/YYYY-MM-DD.csv.gz` (repo_id, stars, forks, pushes, prs, issues; names only for star/fork repos). That's about 0.9M lines and a few MB per day, ~1.5 GB in total. These are aggregates, not raw events. A separate `load` step then picks the tracked set from the whole period and loads only those repos' full daily rows into Postgres. Bonus: changing `N`, the threshold or the weights never needs the 21-hour download again.
+- Tracked-set size `N`: settle after the backfill, using the daily files.
+- Backfill time: roughly 200 GB and ~21 h sequential. Two or three days processed in parallel should cut that substantially if bandwidth allows. Run it in monthly chunks; finished days are skipped on re-run.
 - Hosted Postgres size limits on Fly.io or Render free tiers will decide the final `N`.
