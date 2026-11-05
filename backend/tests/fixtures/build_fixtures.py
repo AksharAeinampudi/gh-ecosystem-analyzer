@@ -1,10 +1,10 @@
 """Regenerate sample-hour.json.gz. Run from backend/: python tests/fixtures/build_fixtures.py
 
 Expected aggregates (asserted in tests):
-  repo 1 alice/fast-lib : stars 2, forks 1, pushes 1           -> kept
-  repo 2 bob/pushy      : pushes 2                             -> dropped (push-only)
-  repo 3 carol/tool-v2  : stars 1, forks 1, prs 1, issues 1    -> kept, latest name wins
-  14 non-empty lines, 10 counted events, 1 malformed line
+  repo 1 alice/fast-lib : stars 2, forks 1, pushes 1
+  repo 2 bob/pushy      : pushes 2 (push-only, so no name recorded)
+  repo 3 carol/tool-v2  : stars 1, forks 1, PR events 2, issue events 2 (latest name wins)
+  14 non-empty lines, 12 counted events, 1 malformed line
 """
 
 import gzip

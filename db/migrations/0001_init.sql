@@ -17,8 +17,8 @@ CREATE TABLE repo_daily_activity (
     stars          INTEGER NOT NULL DEFAULT 0,
     forks          INTEGER NOT NULL DEFAULT 0,
     pushes         INTEGER NOT NULL DEFAULT 0,
-    prs_opened     INTEGER NOT NULL DEFAULT 0,
-    issues_opened  INTEGER NOT NULL DEFAULT 0,
+    pr_events      INTEGER NOT NULL DEFAULT 0,
+    issue_events   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (repo_id, day)
 );
 

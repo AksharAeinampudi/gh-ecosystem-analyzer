@@ -1,10 +1,11 @@
-"""Ingest GH Archive hourly files into repo_daily_activity.
+"""Ingest GH Archive hourly files into daily aggregate files (see ingest.dailyfile).
 
 Usage (from backend/):
-    python -m ingest.gharchive --start 2026-10-01 [--end 2026-10-03] [--force] [--dry-run]
+    python -m ingest.gharchive [--start 2025-01-01] [--end 2025-09-30] [--workers 3] [--force]
 
 Each UTC day is downloaded hour by hour (streamed, never stored), aggregated in memory, then
-written atomically. Days whose 24 hours are all 'done' or 'missing' are skipped unless --force.
+written to DATA_DIR. Days whose 24 hours are all 'done' or 'missing' are skipped unless --force,
+so an interrupted backfill resumes where it stopped. Loading into Postgres is ingest.load.
 """
 
 from __future__ import annotations
@@ -18,15 +19,16 @@ import urllib.error
 import urllib.request
 import zlib
 from collections.abc import Callable, Iterator
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from typing import BinaryIO
 
-from app.db import connect
-from app.settings import Settings
-from ingest import store
+from app.settings import DATASET_END, DATASET_START, Settings
+from ingest import dailyfile
+from ingest.dailyfile import HourStatus, day_bounds
 from ingest.events import ActivityCounter, HourResult, count_lines
-from ingest.store import HourStatus, day_bounds
 
 log = logging.getLogger(__name__)
 
@@ -145,57 +147,77 @@ def daterange(start: date, end: date) -> Iterator[date]:
         d += timedelta(days=1)
 
 
+@dataclass(frozen=True)
+class DaySummary:
+    day: date
+    status: str  # 'skipped' (already complete) | 'complete' | 'incomplete'
+    repos: int = 0
+    seconds: float = 0.0
+
+
+def process_day(
+    day: date,
+    settings: Settings,
+    *,
+    force: bool = False,
+    fetch: Callable[[datetime], HourResult] | None = None,
+    now: datetime | None = None,
+) -> DaySummary:
+    """Ingest one day into its daily file, unless it is already complete."""
+    if not force and dailyfile.day_is_complete(settings.data_dir, day):
+        log.info("%s already complete, skipping (use --force to redo)", day)
+        return DaySummary(day, "skipped")
+    fetch = fetch or partial(fetch_hour, settings=settings)
+    t0 = time.monotonic()
+    res = ingest_day(day, fetch, now or datetime.now(UTC))
+    manifest = dailyfile.write_day(settings.data_dir, day, res.counter, res.hours, res.bad_lines)
+    seconds = time.monotonic() - t0
+    log.info(
+        "%s: %d repos, %d/24 hours done, %.0fs%s",
+        day,
+        manifest.repos,
+        sum(h.status == "done" for h in res.hours),
+        seconds,
+        "" if manifest.complete else "  [INCOMPLETE: re-run to retry failed hours]",
+    )
+    return DaySummary(
+        day, "complete" if manifest.complete else "incomplete", manifest.repos, seconds
+    )
+
+
+def _init_worker(level: int) -> None:
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(message)s")
+
+
 def run(
     start: date,
     end: date,
     settings: Settings,
     *,
+    workers: int = 1,
     force: bool = False,
-    dry_run: bool = False,
     fetch: Callable[[datetime], HourResult] | None = None,
     now: datetime | None = None,
-) -> list[DayResult]:
-    """Ingest every day in [start, end]. With dry_run, nothing touches the database."""
-    fetch = fetch or (lambda hour: fetch_hour(hour, settings))
-    now = now or datetime.now(UTC)
-    conn = None if dry_run else connect(settings.database_url)
-    results: list[DayResult] = []
-    try:
-        for day in daterange(start, end):
-            if conn is not None and not force and store.day_is_complete(conn, day):
-                log.info("%s already complete, skipping (use --force to redo)", day)
-                continue
-            t0 = time.monotonic()
-            res = ingest_day(day, fetch, now)
-            rows = res.counter.rows(settings.min_daily_stars, settings.min_daily_forks)
-            if conn is not None:
-                store.write_day(conn, day, rows, res.counter.names, res.hours)
-            log.info(
-                "%s: %d repos seen, %d rows %s, %d/24 hours done, %.0fs%s",
-                day,
-                len(res.counter.counts),
-                len(rows),
-                "counted (dry run)" if dry_run else "written",
-                sum(h.status == "done" for h in res.hours),
-                time.monotonic() - t0,
-                "" if res.complete else "  [INCOMPLETE: re-run to retry failed hours]",
-            )
-            results.append(res)
-    finally:
-        if conn is not None:
-            conn.close()
-    return results
+) -> list[DaySummary]:
+    """Ingest every day in [start, end], `workers` days at a time."""
+    days = list(daterange(start, end))
+    if workers <= 1:
+        return [process_day(d, settings, force=force, fetch=fetch, now=now) for d in days]
+    if fetch is not None or now is not None:
+        raise ValueError("custom fetch/now are only supported with workers=1")
+    level = logging.getLogger().level
+    with ProcessPoolExecutor(workers, initializer=_init_worker, initargs=(level,)) as pool:
+        return list(pool.map(partial(process_day, settings=settings, force=force), days))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    p.add_argument("--start", type=date.fromisoformat, required=True, help="first UTC day")
-    p.add_argument("--end", type=date.fromisoformat, help="last UTC day (default: --start)")
+    p.add_argument("--start", type=date.fromisoformat, default=DATASET_START)
+    p.add_argument("--end", type=date.fromisoformat, default=DATASET_END)
+    p.add_argument("--workers", type=int, default=1, help="days processed in parallel")
     p.add_argument("--force", action="store_true", help="re-ingest days already complete")
-    p.add_argument("--dry-run", action="store_true", help="download and count, no DB writes")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args(argv)
-    args.end = args.end or args.start
     if args.end < args.start:
         p.error("--end is before --start")
     if args.end >= datetime.now(UTC).date():
@@ -206,8 +228,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=args.log_level, format="%(asctime)s %(levelname)s %(message)s")
-    results = run(args.start, args.end, Settings.from_env(), force=args.force, dry_run=args.dry_run)
-    return 0 if all(r.complete for r in results) else 1
+    summaries = run(
+        args.start, args.end, Settings.from_env(), workers=args.workers, force=args.force
+    )
+    incomplete = [s.day.isoformat() for s in summaries if s.status == "incomplete"]
+    log.info(
+        "%d days: %d ingested, %d skipped, %d incomplete %s",
+        len(summaries),
+        sum(s.status == "complete" for s in summaries),
+        sum(s.status == "skipped" for s in summaries),
+        len(incomplete),
+        incomplete or "",
+    )
+    return 1 if incomplete else 0
 
 
 if __name__ == "__main__":

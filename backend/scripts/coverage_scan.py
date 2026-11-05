@@ -30,8 +30,8 @@ UA = {"User-Agent": "gh-ecosystem-analyzer/0.1 (coverage scan)"}
 OUT = REPO_ROOT / "data" / "coverage"
 
 HOUR_FIELDS = [
-    "hour", "status", "gz_bytes", "events", "stars", "forks", "pushes", "prs_opened",
-    "issues_opened", "repos", "actors", "push_bot_share", "push_has_commits", "push_has_size",
+    "hour", "status", "gz_bytes", "events", "stars", "forks", "pushes", "pr_events",
+    "issue_events", "repos", "actors", "push_bot_share", "push_has_commits", "push_has_size",
     "pr_actions", "bad_lines",
 ]  # fmt: skip
 
@@ -83,8 +83,8 @@ def scan_hour(hour: datetime) -> dict:
         stars=kinds[Kind.STAR],
         forks=kinds[Kind.FORK],
         pushes=pushes,
-        prs_opened=kinds[Kind.PR_OPENED],
-        issues_opened=kinds[Kind.ISSUE_OPENED],
+        pr_events=kinds[Kind.PR_EVENT],
+        issue_events=kinds[Kind.ISSUE_EVENT],
         repos=len(repos),
         actors=len(actors),
         push_bot_share=round(push_bots / pushes, 3) if pushes else "",

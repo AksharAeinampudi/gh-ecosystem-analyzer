@@ -11,7 +11,7 @@ from statistics import median
 
 from scripts.coverage_scan import OUT
 
-METRICS = ["events", "stars", "forks", "pushes", "prs_opened", "issues_opened", "repos"]
+METRICS = ["events", "stars", "forks", "pushes", "pr_events", "issue_events", "repos"]
 
 
 def load(name: str) -> list[dict]:
@@ -47,7 +47,7 @@ def daily_tail(rows: list[dict], since: str) -> None:
     for r in rows:
         if r["hour"] >= since:
             print(f"| {r['hour'][:13]} | {r['status']} | {r['events']} | {r['stars']} | "
-                  f"{r['forks']} | {r['pushes']} | {r['prs_opened']} | {r['issues_opened']} | "
+                  f"{r['forks']} | {r['pushes']} | {r['pr_events']} | {r['issue_events']} | "
                   f"{r['push_has_commits']} |")  # fmt: skip
 
 

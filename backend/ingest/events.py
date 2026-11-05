@@ -15,8 +15,8 @@ class Kind(IntEnum):
     STAR = 0
     FORK = 1
     PUSH = 2
-    PR_OPENED = 3
-    ISSUE_OPENED = 4
+    PR_EVENT = 3
+    ISSUE_EVENT = 4
 
 
 N_KINDS = len(Kind)
@@ -35,17 +35,6 @@ class ParsedEvent(NamedTuple):
     repo_name: str
 
 
-class RepoDayRow(NamedTuple):
-    """One row of repo_daily_activity (column order matches the COPY in ingest.store)."""
-
-    repo_id: int
-    stars: int
-    forks: int
-    pushes: int
-    prs_opened: int
-    issues_opened: int
-
-
 def classify(event: dict[str, Any]) -> Kind | None:
     """Map a decoded event to the Kind it counts as, or None if it is not counted."""
     etype = event.get("type")
@@ -53,13 +42,13 @@ def classify(event: dict[str, Any]) -> Kind | None:
         return Kind.PUSH
     if etype == "ForkEvent":
         return Kind.FORK
-    action = (event.get("payload") or {}).get("action")
-    if etype == "WatchEvent":
-        return Kind.STAR if action == "started" else None
     if etype == "PullRequestEvent":
-        return Kind.PR_OPENED if action == "opened" else None
+        return Kind.PR_EVENT  # any action: BigQuery can't afford reading `action` (SPEC §2)
     if etype == "IssuesEvent":
-        return Kind.ISSUE_OPENED if action == "opened" else None
+        return Kind.ISSUE_EVENT
+    if etype == "WatchEvent":
+        action = (event.get("payload") or {}).get("action")
+        return Kind.STAR if action == "started" else None
     return None
 
 
@@ -94,8 +83,8 @@ def parse_line(line: bytes) -> ParsedEvent | None:
 class ActivityCounter:
     """Per-repo counts for a period (an hour or a day).
 
-    Names are only recorded from star/fork events: every stored repo-day needs at least one
-    of those (Settings enforces thresholds >= 1), and skipping push-only repos saves memory.
+    Names are only recorded from star/fork events: only repos with at least one star or fork
+    in the period can be tracked (SPEC §3.2), and skipping push-only repos saves memory.
     Later `add`/`merge` calls overwrite names, so merging hours in order keeps the latest name.
     """
 
@@ -119,14 +108,6 @@ class ActivityCounter:
                 for i in range(N_KINDS):
                     mine[i] += theirs[i]
         self.names.update(other.names)
-
-    def rows(self, min_stars: int, min_forks: int) -> list[RepoDayRow]:
-        """Repo rows meeting the daily threshold (stars >= min_stars OR forks >= min_forks)."""
-        return [
-            RepoDayRow(repo_id, *c)
-            for repo_id, c in self.counts.items()
-            if c[Kind.STAR] >= min_stars or c[Kind.FORK] >= min_forks
-        ]
 
 
 @dataclass

@@ -5,12 +5,18 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_DATABASE_URL = "postgresql://gea:gea@localhost:5432/gea"
 DEFAULT_GHARCHIVE_BASE_URL = "https://data.gharchive.org"
+DEFAULT_DATA_DIR = REPO_ROOT / "data" / "daily"
+
+# The fixed v1 dataset (SPEC §1).
+DATASET_START = date(2025, 1, 1)
+DATASET_END = date(2025, 9, 30)
 
 
 def load_dotenv(path: Path = REPO_ROOT / ".env") -> dict[str, str]:
@@ -28,22 +34,39 @@ def load_dotenv(path: Path = REPO_ROOT / ".env") -> dict[str, str]:
 
 
 @dataclass(frozen=True)
+class Weights:
+    """activity = stars*w_stars + forks*w_forks + pushes*w_pushes (SPEC §4)."""
+
+    stars: float = 1.0
+    forks: float = 2.0
+    pushes: float = 0.5
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str = DEFAULT_DATABASE_URL
     github_token: str | None = field(default=None, repr=False)
     gharchive_base_url: str = DEFAULT_GHARCHIVE_BASE_URL
-    # A repo-day is stored only if it has at least this many stars OR this many forks.
-    min_daily_stars: int = 1
-    min_daily_forks: int = 1
+    data_dir: Path = DEFAULT_DATA_DIR
     http_timeout_s: float = 60.0
     fetch_retries: int = 3
+    weights: Weights = field(default_factory=Weights)
+    # Tracked set (SPEC §3.2): top N repos by activity over the loaded range.
+    tracked_repos: int = 25_000
+    # Pass 1 of the load ranks by stars/forks only and keeps N * factor candidates,
+    # so repos whose pushes would lift them into the top N are not cut early.
+    candidate_factor: int = 4
+    # BigQuery ingest (ingest.bigquery)
+    gcp_project: str | None = None
+    bq_dataset: str = "gea"
+    bq_candidates: int = 200_000
+    bq_max_gb: float = 150.0  # hard cap on bytes billed per query
 
     def __post_init__(self) -> None:
-        # Both thresholds must be >= 1: repo names are only captured from star/fork events.
-        if self.min_daily_stars < 1 or self.min_daily_forks < 1:
-            raise ValueError("min_daily_stars and min_daily_forks must be >= 1")
         if self.fetch_retries < 1:
             raise ValueError("fetch_retries must be >= 1")
+        if self.tracked_repos < 1 or self.candidate_factor < 1:
+            raise ValueError("tracked_repos and candidate_factor must be >= 1")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -55,8 +78,18 @@ class Settings:
             gharchive_base_url=env.get("GHARCHIVE_BASE_URL", DEFAULT_GHARCHIVE_BASE_URL).rstrip(
                 "/"
             ),
-            min_daily_stars=int(env.get("INGEST_MIN_DAILY_STARS", "1")),
-            min_daily_forks=int(env.get("INGEST_MIN_DAILY_FORKS", "1")),
+            data_dir=Path(env.get("DATA_DIR", str(DEFAULT_DATA_DIR))),
             http_timeout_s=float(env.get("INGEST_HTTP_TIMEOUT_S", "60")),
             fetch_retries=int(env.get("INGEST_FETCH_RETRIES", "3")),
+            weights=Weights(
+                stars=float(env.get("WEIGHT_STARS", "1")),
+                forks=float(env.get("WEIGHT_FORKS", "2")),
+                pushes=float(env.get("WEIGHT_PUSHES", "0.5")),
+            ),
+            tracked_repos=int(env.get("TRACKED_REPOS", "25000")),
+            candidate_factor=int(env.get("CANDIDATE_FACTOR", "4")),
+            gcp_project=env.get("GOOGLE_CLOUD_PROJECT") or None,
+            bq_dataset=env.get("BQ_DATASET", "gea"),
+            bq_candidates=int(env.get("BQ_CANDIDATES", "200000")),
+            bq_max_gb=float(env.get("BQ_MAX_GB", "150")),
         )
