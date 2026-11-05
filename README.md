@@ -19,6 +19,8 @@ flowchart LR
 
     subgraph Pipeline["Pipeline (one-time backfill)"]
         ING[ingest<br/>stream + filter + aggregate]
+        FILES[(daily aggregate files<br/>all repos, ~1 per day)]
+        LOAD[load<br/>pick top-N tracked repos]
         ENR[enrich<br/>language + topics<br/>for tracked repos]
         ROL[rollup<br/>SQL]
     end
@@ -32,7 +34,7 @@ flowchart LR
     API[FastAPI<br/>/api/v1]
     UI[React + Recharts<br/>dashboard]
 
-    GHA --> ING --> RDA
+    GHA --> ING --> FILES --> LOAD --> RDA
     GQL --> ENR --> REP
     RDA --> ROL
     REP --> ROL

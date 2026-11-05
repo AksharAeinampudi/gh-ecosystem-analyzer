@@ -7,7 +7,8 @@ Conventions for working in this repo. Scope, data model, API and milestones live
 ```
 backend/
   app/          FastAPI app: routes, SQL queries, settings
-  ingest/       gharchive.py (M1), enrich.py (M2), rollup.py (M2)
+  ingest/       gharchive.py + dailyfile.py + load.py (M1), enrich.py, rollup.py (M2)
+  scripts/      one-off analysis (GH Archive coverage scan)
   tests/        pytest; fixtures/ holds small .json.gz samples
 db/migrations/  0001_init.sql, 0002_... (plain SQL, applied in order)
 frontend/       Vite + React + TS + Recharts
@@ -27,7 +28,8 @@ docker-compose.yml
 ## Ingestion rules
 
 - Stream GH Archive files: download → gzip decompress → parse line by line → aggregate. Never write raw events to disk or the DB.
-- Every step must be idempotent and resumable. `ingest_hours` records progress, and re-running a range must not double count.
+- Every step must be idempotent and resumable. Daily manifests record progress (a day is done when its manifest says all 24 hours are done or missing), and re-running a range must not double count.
+- Ingest writes daily aggregate files (`data/daily/`, git-ignored); only `ingest.load` writes activity to Postgres.
 - All days are UTC.
 - Treat missing GH Archive hours as expected: record them as `missing`, and don't crash.
 

@@ -36,12 +36,16 @@ Hourly files at `https://data.gharchive.org/YYYY-MM-DD-H.json.gz` (H = 0..23, no
 | `WatchEvent` | `payload.action == "started"` | star |
 | `ForkEvent` | none | fork (credited to the source repo, `repo.id`) |
 | `PushEvent` | none | push |
-| `PullRequestEvent` | `payload.action == "opened"` | PR opened |
-| `IssuesEvent` | `payload.action == "opened"` | issue opened |
+| `PullRequestEvent` | none (any action) | PR event |
+| `IssuesEvent` | none (any action) | issue event |
 
 All other event types are skipped. A repo is keyed by `repo.id`, which survives renames. `repo.name` is kept as the latest known `owner/name`.
 
 **Volume:** a 2025 day is about 0.6–1 GB gzipped (24 hourly files), so the 273-day dataset is roughly 200 GB downloaded. Ingestion must stream each file (download, decompress, filter and aggregate in a single pass) and never store raw events. The backfill is a one-time job and can run in chunks, because finished days are skipped.
+
+### GH Archive on BigQuery (default path)
+
+The same events are published as BigQuery tables, `githubarchive.day.YYYYMMDD`. `ingest.bigquery` aggregates them on Google's side (one ~66 GB scan, inside the 1 TB/month free tier). It keeps the top `BQ_CANDIDATES` (default 200,000) repos by weighted stars + forks, and writes the same daily files as `ingest.gharchive`, holding candidate repos only. Every query is dry-run first and capped with `maximum_bytes_billed` (`BQ_MAX_GB`, default 150). The project comes from `GOOGLE_CLOUD_PROJECT`, and auth from `gcloud auth application-default login`.
 
 ### GitHub GraphQL API (`GITHUB_TOKEN`)
 
@@ -74,12 +78,12 @@ repo_daily_activity (
   stars          INTEGER NOT NULL DEFAULT 0,
   forks          INTEGER NOT NULL DEFAULT 0,
   pushes         INTEGER NOT NULL DEFAULT 0,
-  prs_opened     INTEGER NOT NULL DEFAULT 0,
-  issues_opened  INTEGER NOT NULL DEFAULT 0,
+  pr_events      INTEGER NOT NULL DEFAULT 0,   -- all PR events, any action (§2)
+  issue_events   INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (repo_id, day)
 )
 
--- Ingestion bookkeeping, makes re-runs idempotent
+-- Hour statuses of the loaded days (copied from the daily manifests by ingest.load)
 ingest_hours (
   hour_ts        TIMESTAMPTZ PRIMARY KEY, -- start of the GH Archive hour
   status         TEXT NOT NULL,           -- 'done' | 'failed' | 'missing'
@@ -89,8 +93,8 @@ ingest_hours (
 )
 
 -- Rollups, rebuilt after each ingest + enrichment run
-language_daily (language TEXT, day DATE, stars, forks, pushes, prs_opened,
-                issues_opened, active_repos, PRIMARY KEY (language, day))
+language_daily (language TEXT, day DATE, stars, forks, pushes, pr_events,
+                issue_events, active_repos, PRIMARY KEY (language, day))
 topic_daily    (topic TEXT,    day DATE, ...same columns...,
                 PRIMARY KEY (topic, day))
 ```
@@ -99,13 +103,15 @@ A repo counts toward **every** topic it has, so topic totals overlap and must no
 
 ### 3.2 Keeping the table small: the tracked set
 
-Millions of repos have at least one event per day, so storing a row per active repo per day would mean over 100M rows, too much for a free hosted Postgres. Plan:
+About 0.9M repos have a counted event on a 2025 day (§8a), so storing every repo-day would mean about 245M rows, far too much for a free hosted Postgres. The pipeline has two steps:
 
-1. Ingest aggregates each **day** in memory, keyed by `repo_id`.
-2. Only repos that meet a daily threshold are written. Default: at least 1 star **or** at least 1 fork that day. That drops repos with only pushes (mostly private-workflow and bot repos).
-3. The **tracked set** is the top `N` repos by activity across the retention window (default `N = 25,000`). Only tracked repos are enriched and counted in the rollups. Rows for repos that fall out of the set are pruned.
+1. **Ingest** (`ingest.gharchive`) aggregates each UTC day in memory and writes a **daily aggregate file** with counts for *every* repo: `data/daily/YYYY-MM-DD.csv.gz` plus a `.json` manifest of hour statuses (`ingest.dailyfile`). These are per-repo counts, not raw events. Names are recorded only from star/fork events.
+2. **Load** (`ingest.load`) picks the **tracked set**, the top `N` repos by weighted activity over the loaded range (default `N = 25,000`), and loads their *complete* daily history into Postgres, push-only days included.
+   - Pass 1 (files): rank repos by stars + forks only and keep `N × CANDIDATE_FACTOR` (default 4) candidates. Repos that never get a star or fork can't be tracked; these are mostly bot and CI repos.
+   - Pass 2 (Postgres): COPY the candidates' rows into a temp table, rank by full weighted activity in SQL, and keep the top `N`.
+   - A load rebuilds `repo_daily_activity` and `ingest_hours` in one transaction. `repos` is kept as a cache, so enrichment survives reloads.
 
-Both the threshold and `N` are config values, and M1/M2 should measure the row counts they produce before we commit to them.
+Changing `N` or the weights only needs a reload (minutes), never the full re-download (about 21 hours).
 
 **Retention:** the whole dataset (2025-01-01 → 2025-09-30). Nothing rolls off, because the period is fixed.
 
@@ -130,7 +136,7 @@ momentum(x)   = share_cur(x) / share_prev(x) − 1
 - `FLOOR` (default 100) stops tiny languages or topics from showing +5000% growth.
 - Languages or topics with fewer than `MIN_REPOS` (default 20) active tracked repos in the current window are left out of the leaderboard.
 - Repos with no language (`NULL`) still count toward `T`. Topic totals overlap (one repo, many topics), but `T` is still the plain total over repos.
-- PRs and issues are stored and charted but carry no weight in v1.
+- PR and issue events are stored and charted but carry no weight in v1.
 
 **Things to check against real data (M3):**
 - **Is the share series continuous across 2025-06?** If the June drop was not uniform across languages, a step in a language's share would show up there. If it does, restrict comparisons to windows that don't cross the step (Jan–May or Jun–Sep).
@@ -172,7 +178,7 @@ Daily points covering the current window plus the previous one (so 2·W days), l
 ```json
 { "name": "Rust", "dimension": "language", "as_of": "2025-09-30",
   "points": [ { "day": "2025-04-04", "stars": 0, "forks": 0, "pushes": 0,
-                "prs_opened": 0, "issues_opened": 0, "activity": 0.0,
+                "pr_events": 0, "issue_events": 0, "activity": 0.0,
                 "share": 0.0 } ] }
 ```
 
@@ -201,12 +207,12 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 
 ### M1 — Ingest pipeline
 - `docker-compose.yml` with Postgres 16; numbered SQL migrations in `db/migrations/`, plus a tiny runner.
-- `ingest` script: `python -m ingest.gharchive --start YYYY-MM-DD --end YYYY-MM-DD`. Streams the hourly files, applies the §2 filters, aggregates per day and upserts. Idempotent via `ingest_hours`, with a retry for hours that failed and a record for hours that are missing (GH Archive has gaps).
-- Unit tests on a small fixture `.json.gz`, covering the event filters and per-day aggregation.
-- **Done when:** one real day ingests end to end, a re-run changes nothing, and pytest and ruff pass. Record events/hour, MB/hour and rows/day here.
+- `python -m ingest.gharchive [--start] [--end] [--workers N]` (defaults to the dataset range). Streams the hourly files, applies the §2 filters, and writes one daily aggregate file per day (§3.2). Complete days are skipped, so the backfill resumes after a stop. Failed hours make the day incomplete and get retried on the next run.
+- `python -m ingest.load` builds the tracked set and loads it (§3.2).
+- Unit tests on a small fixture `.json.gz`, covering the event filters, per-day aggregation, daily files and tracked-set selection. DB tests for the load step.
+- **Done when:** one real day ingests end to end, a re-run changes nothing, the load step runs against Postgres, and pytest and ruff pass. Record events/hour, MB/hour and rows/day here.
 
 ### M2 — Enrichment + rollups
-- Tracked-set selection and pruning (§3.2).
 - GraphQL enrichment with batching, rate-limit backoff, and handling for not-found or renamed repos.
 - Rollup SQL that rebuilds `language_daily` and `topic_daily`.
 - Momentum query in SQL, unit-tested on a hand-built dataset with known answers.
@@ -240,6 +246,9 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 | 2026-11-04 | A 404 for an hour that ended less than 6h ago is `failed`, not `missing` | GH Archive publishes with a delay; don't mark an hour missing too early |
 | 2026-11-04 | Dataset fixed to 2025-01-01 → 2025-09-30; no daily refresh in v1 | Coverage scan (§8a): stars unreliable from Oct 2025, erratic from Aug 2026 |
 | 2026-11-04 | Momentum = relative change in share of total activity, not raw growth | Cancels the uniform June 2025 volume drop; measures growth relative to the ecosystem |
+| 2026-11-04 | Ingest writes daily aggregate files for all repos; a separate load step picks the tracked set | The per-day star/fork filter dropped 96.5% of pushes; files also make reloads cheap |
+| 2026-11-04 | Daily files are built in BigQuery (`ingest.bigquery`); `ingest.gharchive` stays as the no-account fallback | ~66 GB scanned in the free tier vs a 200 GB, 21-hour download |
+| 2026-11-04 | Count all PR and issue events, not only opened ones, in both ingest paths | Reading `payload` for the action costs 3.59 TB in BigQuery; these counts are only charted |
 | 2026-11-04 | API takes an optional `as_of` date | With a fixed dataset, exploring different end dates is the main way to look at trends |
 
 ## 8a. M1 measurements (2026-11-04)
@@ -296,6 +305,30 @@ Conclusions:
 
 Peak memory was not captured; the measurement call returned 0. A rough estimate for 0.9M repo entries is a few hundred MB.
 
+### BigQuery dry runs (2026-11-04)
+
+Aggregating `githubarchive.day.2025*` for 0101–0930 into per-repo daily counts, measured with the console's free estimate (sandbox project, nothing run):
+
+| Query | Bytes scanned | vs 1 TB/month free tier |
+|---|---|---|
+| With `payload` (to count only *opened* PRs and issues) | **3.59 TB** | 3.6x over |
+| Without `payload` (count all PR and issue events) | **65.75 GB** | ~7% |
+
+BigQuery bills every column it reads, and `payload` is almost all of the data. Counting all PR and issue events instead of only opened ones keeps the whole aggregation inside the free tier. A full re-run costs ~66 GB, so it can be repeated about 15 times a month.
+
+### BigQuery ingest run (2026-11-05)
+
+`python -m ingest.bigquery` for 2025-01-01 → 2025-09-30 in project `complete-road-513804-i0`:
+
+| Metric | Value |
+|---|---|
+| Bytes scanned | 70.6 GB (candidate table) + 25.7 GB (hourly counts) ≈ 96 GB, ~10% of the monthly free tier |
+| Days written | 273 / 273, all complete |
+| Missing hours (no events in BigQuery) | 10 in the whole period (e.g. 1 on 2025-09-07, 2 on 2025-09-17) |
+| Candidate repos per day | min 39,889, median 52,353, max 68,819 (of the top 200,000 overall) |
+| Daily files on disk | 267 MB in total |
+| Wall time | about 25 minutes, mostly reading the table back |
+
 **Problem found: the per-day threshold distorts pushes, PRs and issues.** A tracked repo's pushes only count on days it also gets a star or fork, so 96.5% of pushes are dropped and the push term in `activity` is biased toward star days. See §9 for the fix.
 
 ## 9. Open questions
@@ -303,7 +336,8 @@ Peak memory was not captured; the measurement call returned 0. A rough estimate 
 - ~~Data source after the GH Archive drop~~ Resolved 2026-11-04: a fixed 2025 dataset with share-based momentum (§1, §4, §8).
 - **Phase 2 (optional): live mode.** Take daily `stargazerCount` snapshots of the tracked repos through GraphQL, about 500 queries a day for 25k repos, and use the day-to-day difference as stars per day. History starts the day the job does, so the 90-day comparison would only work after about 6 months.
 - Hours marked `missing` can appear later. Should ingest re-check `missing` hours for a few days instead of treating them as final? (Mostly a Phase 2 concern; the 2025 backfill can simply be re-run.)
-- **Per-day threshold drops most pushes, PRs and issues (§8a dry run). Blocks M2.** Proposed fix: ingest writes a compact daily aggregate file for *all* repos, `data/daily/YYYY-MM-DD.csv.gz` (repo_id, stars, forks, pushes, prs, issues; names only for star/fork repos). That's about 0.9M lines and a few MB per day, ~1.5 GB in total. These are aggregates, not raw events. A separate `load` step then picks the tracked set from the whole period and loads only those repos' full daily rows into Postgres. Bonus: changing `N`, the threshold or the weights never needs the 21-hour download again.
+- ~~Per-day threshold drops most pushes, PRs and issues~~ Resolved 2026-11-04: daily aggregate files plus a separate load step (§3.2).
+- `CANDIDATE_FACTOR`: check after the backfill whether full weighted activity ever ranks a repo into the top `N` from outside the candidates. If it does, raise the factor.
 - Tracked-set size `N`: settle after the backfill, using the daily files.
 - Backfill time: roughly 200 GB and ~21 h sequential. Two or three days processed in parallel should cut that substantially if bandwidth allows. Run it in monthly chunks; finished days are skipped on re-run.
 - Hosted Postgres size limits on Fly.io or Render free tiers will decide the final `N`.
