@@ -1,7 +1,7 @@
 """Fetch language, topics and star totals for tracked repos from the GitHub GraphQL API.
 
 Usage (from backend/, with GITHUB_TOKEN set in .env):
-    python -m ingest.enrich [--limit N] [--retry-errors]
+    python -m ingest.enrich [--workers 4] [--limit N] [--retry-errors]
 
 GH Archive only gives a numeric repo id and a name, so repos are looked up by name, about 50
 per request, and the returned databaseId is checked against ours. GraphQL follows renames; a
@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -258,47 +259,68 @@ def run(
     *,
     limit: int | None = None,
     retry_errors: bool = False,
+    workers: int = 1,
     post: Post = post_graphql,
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> EnrichSummary:
     if not settings.github_token:
         raise AuthError("GITHUB_TOKEN is not set (add it to .env)")
+    if workers < 1:
+        raise ValueError("workers must be >= 1")
     todo = pending_repos(conn, limit, retry_errors)
     log.info("%d repos to enrich", len(todo))
     counts = {"ok": 0, "not_found": 0, "error": 0}
-    requests = failed = consecutive_failed = 0
+    requests = failed = consecutive_failed = done = 0
     size = settings.enrich_batch_size
-    for start in range(0, len(todo), size):
-        batch = todo[start : start + size]
+    batches = [todo[i : i + size] for i in range(0, len(todo), size)]
+
+    def fetch(
+        batch: Sequence[RepoRef],
+    ) -> tuple[list[EnrichResult], RateLimit | None] | TransientError:
         try:
-            results, rate = fetch_batch(batch, settings, post, sleep)
+            return fetch_batch(batch, settings, post, sleep)
         except TransientError as exc:
-            failed += 1
-            consecutive_failed += 1
-            log.error("batch at %d failed after %d attempts: %s", start, MAX_ATTEMPTS, exc)
+            return exc
+
+    # Requests go out `workers` at a time; results are saved and the rate limit is checked
+    # between groups, so a pause or a stop takes effect before the next group starts.
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for g in range(0, len(batches), workers):
+            lowest: RateLimit | None = None
+            for batch, outcome in zip(
+                batches[g : g + workers], pool.map(fetch, batches[g : g + workers]), strict=True
+            ):
+                done += len(batch)
+                if isinstance(outcome, TransientError):
+                    failed += 1
+                    consecutive_failed += 1
+                    log.error("a batch failed after %d attempts: %s", MAX_ATTEMPTS, outcome)
+                    continue
+                results, rate = outcome
+                consecutive_failed = 0
+                requests += 1
+                save_results(conn, results)
+                for r in results:
+                    counts[r.status] += 1
+                if rate is not None and (lowest is None or rate.remaining < lowest.remaining):
+                    lowest = rate
+                if requests % 20 == 0 or done == len(todo):
+                    log.info("%d/%d done (%s)", done, len(todo), counts)
             if consecutive_failed >= MAX_FAILED_BATCHES:
                 log.error("stopping after %d failed batches in a row; re-run to resume", failed)
                 break
-            continue
-        consecutive_failed = 0
-        requests += 1
-        save_results(conn, results)
-        for r in results:
-            counts[r.status] += 1
-        done = start + len(batch)
-        if requests % 20 == 0 or done == len(todo):
-            log.info("%d/%d done (%s)", done, len(todo), counts)
-        if rate is not None and rate.remaining < RATE_RESERVE and done < len(todo):
-            wait = max((rate.reset_at - now()).total_seconds(), 0) + 5
-            log.warning("rate limit nearly used up; waiting %.0fs for the reset", wait)
-            sleep(wait)
+            if lowest is not None and lowest.remaining < RATE_RESERVE and done < len(todo):
+                wait = max((lowest.reset_at - now()).total_seconds(), 0) + 5
+                log.warning("rate limit nearly used up; waiting %.0fs for the reset", wait)
+                sleep(wait)
     return EnrichSummary(counts["ok"], counts["not_found"], counts["error"], requests, failed)
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--limit", type=int, help="enrich at most this many repos")
+    p.add_argument("--workers", type=int, default=1, help="requests sent in parallel (try 4)")
     p.add_argument("--retry-errors", action="store_true", help="also retry repos marked 'error'")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args(argv)
@@ -306,7 +328,13 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.from_env()
     try:
         with connect(settings.database_url) as conn:
-            s = run(conn, settings, limit=args.limit, retry_errors=args.retry_errors)
+            s = run(
+                conn,
+                settings,
+                limit=args.limit,
+                retry_errors=args.retry_errors,
+                workers=args.workers,
+            )
     except AuthError as exc:
         log.error("%s", exc)
         return 2

@@ -175,3 +175,12 @@ def test_retry_errors_flag(three_repos):
     settings = replace(SETTINGS, enrich_batch_size=50)
     assert run(three_repos, settings, post=github, sleep=lambda s: None).requests == 0
     assert run(three_repos, settings, retry_errors=True, post=github, sleep=lambda s: None).ok == 1
+
+
+@pytest.mark.db
+def test_parallel_workers_give_the_same_result(three_repos):
+    github = FakeGitHub({"a/one": node(1, "Rust"), "b/two": node(2, "Go"), "c/three": node(3, "C")})
+    settings = replace(SETTINGS, enrich_batch_size=1)
+    summary = run(three_repos, settings, workers=3, post=github, sleep=lambda s: None)
+    assert (summary.ok, summary.requests) == (3, 3)
+    assert [r[1] for r in repo_rows(three_repos)] == ["Rust", "Go", "C"]
