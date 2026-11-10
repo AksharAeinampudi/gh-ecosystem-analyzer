@@ -93,6 +93,12 @@ def test_rollup_tables(scored_db):
 
 
 @pytest.mark.db
+def test_rollup_drops_topics_with_too_few_repos(scored_db):
+    rebuild(scored_db, SETTINGS.push_cap, min_topic_repos=2)  # cli has 1 repo, web has 2
+    assert scored_db.execute("SELECT DISTINCT topic FROM topic_daily").fetchall() == [("web",)]
+
+
+@pytest.mark.db
 def test_rollup_rebuild_is_idempotent(scored_db):
     before = scored_db.execute("SELECT * FROM language_daily ORDER BY 1, 2").fetchall()
     rebuild(scored_db, SETTINGS.push_cap)
