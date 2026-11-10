@@ -44,6 +44,8 @@ docker-compose.yml
 
 - TypeScript strict mode. Keep API response types in one `api.ts` that mirrors SPEC §5.
 - Recharts for all charts. Every view needs loading, error and empty states.
+- Layout: `src/api.ts` (types and URLs), `src/useApi.ts` (fetch hook), `src/format.ts` (pure helpers, unit-tested), `src/components/`. Colors are CSS variables in `src/index.css`, with a dark set under `prefers-color-scheme`.
+- Before calling frontend work done: `npm test`, `npm run lint` and `npm run build` pass (from `frontend/`), and the page has been looked at in a browser.
 
 ## Secrets and git
 

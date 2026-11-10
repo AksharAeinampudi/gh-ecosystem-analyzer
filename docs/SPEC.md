@@ -244,6 +244,7 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 - Vite + React + TS + Recharts: leaderboard (language/topic toggle, gainers/decliners), time series for the selected item (share by default, raw counts as a toggle, current vs previous window), top repos table, 30/60/90 picker, an "as of" date control limited to the dataset, and a visible note that the data is a 2025 snapshot and why.
 - Loading, error and empty states; usable on a phone-width screen.
 - **Done when:** every §1 question can be answered from the UI.
+- Built 2026-11-10. One filter row (languages or topics, 30/60/90 days, end date, a lookup box for any name, a toggle for single-repo spikes) scopes everything below it: the gaining and losing lists, and for the selected entry its headline figures, a daily trend (previous window in gray, current in blue, 7-day average by default, with a table of the same numbers) and the repos behind the change. A note appears when the comparison spans 2025-06-01. Checked by hand at desktop and phone widths, in light and dark mode.
 
 ### M5 — Deploy
 - Dockerfiles (API serves the built frontend, or two services), deploy to Fly.io or Render with a hosted Postgres loaded from the local backfill (`pg_dump` of the slim tables).
@@ -274,6 +275,7 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 | 2026-11-09 | Keep `PUSH_CAP = 25` and weights 1 / 2 / 0.5 | Rankings are stable across caps 10–100 and weights ±50% (Spearman ≥ 0.975) |
 | 2026-11-09 | API caches leaderboard and meta results in memory | The dataset is fixed, and the topic leaderboard takes up to 3 s uncached |
 | 2026-11-10 | Timeseries response carries a `summary` (momentum and shares for that name) | The dashboard needs the figures for any name a user looks up, e.g. Python, which is never in a top 10 |
+| 2026-11-10 | Dashboard leaderboard rows are an HTML list with inline bars; Recharts draws the trend chart | Rows need several text columns and to be clickable and keyboard-reachable; a chart library adds nothing there |
 | 2026-11-04 | API takes an optional `as_of` date | With a fixed dataset, exploring different end dates is the main way to look at trends |
 
 ## 8a. M1 measurements (2026-11-04)
@@ -449,6 +451,5 @@ Raw volume fell 38% in June, while shares moved by a median of about 8% across t
 - `CANDIDATE_FACTOR`: check after the backfill whether full weighted activity ever ranks a repo into the top `N` from outside the candidates. If it does, raise the factor.
 - Tracked-set size `N`: settle after the backfill, using the daily files.
 - Backfill time: roughly 200 GB and ~21 h sequential. Two or three days processed in parallel should cut that substantially if bandwidth allows. Run it in monthly chunks; finished days are skipped on re-run.
-- The dashboard should show a note when the two windows straddle 2025-06-01, since that comparison is noisier (§4).
 - Topic leaderboards take 1.4–3 s uncached. If that matters after deploy, precompute per-repo window sums or restrict the per-repo scan to kept topics.
 - Hosted Postgres size limits on Fly.io or Render free tiers will decide the final `N`.
