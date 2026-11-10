@@ -6,7 +6,7 @@ This project reads all public GitHub activity from [GH Archive](https://www.ghar
 
 The dataset is a fixed snapshot, **January–September 2025**. A coverage scan of GH Archive found that from late 2025 its star and fork counts no longer reflect real GitHub activity, and from mid-2026 the data is erratic. The details are in [SPEC §8a](docs/SPEC.md#8a-m1-measurements-2026-11-04).
 
-> Status: early development (M1). See [docs/SPEC.md](docs/SPEC.md) for scope, data model, API and milestones.
+> Status: M1 done (2025 data loaded); M2 next. See [docs/SPEC.md](docs/SPEC.md) for scope, data model, API and milestones.
 
 ## Architecture
 
@@ -74,7 +74,7 @@ The enrichment step needs a GitHub token in the `GITHUB_TOKEN` environment varia
 
 ## Roadmap
 
-- [ ] **M1** Ingest pipeline: GH Archive → `repo_daily_activity`
+- [x] **M1** Ingest pipeline: GH Archive → `repo_daily_activity`
 - [ ] **M2** Enrichment + language/topic rollups + momentum query
 - [ ] **M3** JSON API + validating the momentum weights
 - [ ] **M4** Dashboard

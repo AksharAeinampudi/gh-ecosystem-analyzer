@@ -329,6 +329,21 @@ BigQuery bills every column it reads, and `payload` is almost all of the data. C
 | Daily files on disk | 267 MB in total |
 | Wall time | about 25 minutes, mostly reading the table back |
 
+### First load into Postgres (2026-11-09)
+
+`python -m ingest.load` on the 273 daily files, with Postgres 16 in Docker on a laptop:
+
+| Metric | Value |
+|---|---|
+| Wall time | 112 s (28 s to pick candidates from the files, 84 s to stage, rank and insert) |
+| Tracked repos | 25,000 (from 100,000 candidates; lowest tracked score 355) |
+| `repo_daily_activity` rows | 4,845,193 over 273 days |
+| Hours | 6,542 done, 10 missing |
+| Database size | 515 MB |
+| Totals | 21.8M stars, 4.6M forks, 19.1M pushes, 7.7M PR events, 3.7M issue events |
+
+**Finding: a few bot repos dominate the push term.** The top repo by activity is `SoliSpirit/v2ray-configs` with 2.1M pushes and 158 stars; `likhonsible/Flash-USDT-Sender` (638k pushes, 56 stars) and `rust-lang/crates.io-index` (279k pushes) are also in the top five. The top repo alone is about 11% of all tracked pushes. This confirms the §4 concern, and M2/M3 must cap pushes per repo per day (or drop the push term) before the leaderboard means anything.
+
 **Problem found: the per-day threshold distorts pushes, PRs and issues.** A tracked repo's pushes only count on days it also gets a star or fork, so 96.5% of pushes are dropped and the push term in `activity` is biased toward star days. See §9 for the fix.
 
 ## 9. Open questions
