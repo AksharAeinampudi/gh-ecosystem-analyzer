@@ -234,3 +234,24 @@ def test_openapi_documents_every_endpoint(client):
         "/api/v1/timeseries",
         "/api/v1/top-repos",
     }
+
+
+def test_serves_the_built_dashboard_when_static_dir_is_set(seeded, tmp_path):
+    (tmp_path / "index.html").write_text("<title>dashboard</title>", encoding="utf-8")
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+    with TestClient(create_app(replace(seeded, static_dir=tmp_path))) as c:
+        assert "<title>dashboard</title>" in c.get("/").text
+        assert c.get("/assets/app.js").status_code == 200
+        assert c.get("/health").json() == {"status": "ok"}  # API routes still win
+        assert c.get("/api/v1/meta").status_code == 200
+        assert c.get("/api/v1/nope").status_code == 404
+
+
+def test_no_dashboard_without_static_dir(client):
+    assert client.get("/").status_code == 404
+
+
+def test_missing_static_dir_fails_at_startup(seeded, tmp_path):
+    with pytest.raises(RuntimeError, match="STATIC_DIR"):
+        create_app(replace(seeded, static_dir=tmp_path / "missing"))

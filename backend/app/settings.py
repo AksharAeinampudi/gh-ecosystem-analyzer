@@ -58,6 +58,8 @@ class Settings:
     max_top_repo_share: float = 0.5  # above this, one repo dominates ("concentrated")
     # API
     cors_origins: tuple[str, ...] = ("http://localhost:5173",)
+    # Folder with the built dashboard (frontend/dist). When set, the API also serves it at /.
+    static_dir: Path | None = None
     # Enrichment (ingest.enrich)
     github_graphql_url: str = "https://api.github.com/graphql"
     enrich_batch_size: int = 50
@@ -104,6 +106,7 @@ class Settings:
             momentum_floor=float(env.get("MOMENTUM_FLOOR", "100")),
             min_repos=int(env.get("MIN_REPOS", "20")),
             max_top_repo_share=float(env.get("MAX_TOP_REPO_SHARE", "0.5")),
+            static_dir=Path(env["STATIC_DIR"]) if env.get("STATIC_DIR") else None,
             cors_origins=tuple(
                 o.strip()
                 for o in env.get("CORS_ORIGINS", "http://localhost:5173").split(",")

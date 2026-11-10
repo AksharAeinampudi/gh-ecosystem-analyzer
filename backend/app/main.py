@@ -14,6 +14,7 @@ import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import momentum, schemas
 from app.db import connect
@@ -84,7 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def get_conn() -> Iterator[psycopg.Connection]:
         try:
-            conn = connect(settings.database_url, connect_timeout=5)
+            conn = connect(settings.database_url, connect_timeout=10)  # hosted DBs wake slowly
         except psycopg.OperationalError:
             raise HTTPException(503, "database unavailable") from None
         with conn:
@@ -204,6 +205,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "name": name,
             "items": [{**asdict(r), "url": r.url} for r in repos],
         }
+
+    # Mounted last, so /health and /api/... are matched first. In production one container
+    # serves both the API and the built dashboard; in development Vite serves the dashboard.
+    if settings.static_dir is not None:
+        if not settings.static_dir.is_dir():
+            raise RuntimeError(f"STATIC_DIR does not exist: {settings.static_dir}")
+        app.mount("/", StaticFiles(directory=settings.static_dir, html=True), name="dashboard")
 
     return app
 
