@@ -89,7 +89,8 @@ CREATE TEMP TABLE tracked (repo_id BIGINT PRIMARY KEY, score DOUBLE PRECISION) O
 _PICK_TRACKED = """
 INSERT INTO tracked (repo_id, score)
 SELECT repo_id,
-       sum(stars * %(w_stars)s + forks * %(w_forks)s + pushes * %(w_pushes)s) AS score
+       sum(stars * %(w_stars)s + forks * %(w_forks)s
+           + LEAST(pushes, %(push_cap)s) * %(w_pushes)s) AS score
 FROM stage_activity
 GROUP BY repo_id
 ORDER BY score DESC, repo_id
@@ -162,6 +163,7 @@ def load_into_db(
                 "w_stars": w.stars,
                 "w_forks": w.forks,
                 "w_pushes": w.pushes,
+                "push_cap": settings.push_cap,
                 "n": settings.tracked_repos,
             },
         )

@@ -48,5 +48,8 @@ def test_database_url() -> Iterator[str]:
 def db(test_database_url: str) -> Iterator[psycopg.Connection]:
     """A connection to a migrated test database with all data tables emptied."""
     with connect(test_database_url) as conn:
-        conn.execute("TRUNCATE repo_daily_activity, repos, ingest_hours")
+        conn.execute(
+            "TRUNCATE repo_daily_activity, repos, ingest_hours,"
+            " language_daily, topic_daily, total_daily"
+        )
         yield conn

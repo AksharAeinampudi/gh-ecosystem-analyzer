@@ -92,14 +92,17 @@ ingest_hours (
   processed_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 )
 
--- Rollups, rebuilt after each ingest + enrichment run
-language_daily (language TEXT, day DATE, stars, forks, pushes, pr_events,
-                issue_events, active_repos, PRIMARY KEY (language, day))
+-- Rollups, rebuilt by ingest.rollup after each load or enrichment run
+language_daily (language TEXT, day DATE, stars, forks, pushes, pushes_capped,
+                pr_events, issue_events, active_repos, PRIMARY KEY (language, day))
 topic_daily    (topic TEXT,    day DATE, ...same columns...,
                 PRIMARY KEY (topic, day))
+total_daily    (day DATE PRIMARY KEY, ...same columns...)   -- all tracked repos
 ```
 
-A repo counts toward **every** topic it has, so topic totals overlap and must not be summed across topics.
+A repo counts toward **every** topic it has, so topic totals overlap and must not be summed across topics. `total_daily` counts each repo once, with or without a language.
+
+`pushes_capped` is the sum of `LEAST(pushes, PUSH_CAP)` per repo per day (§4). Rollups keep the raw sums and the capped sum, not a finished activity score, so the weights can change at query time without a rebuild. Changing `PUSH_CAP` needs a rollup rebuild, which takes seconds.
 
 ### 3.2 Keeping the table small: the tracked set
 
@@ -108,7 +111,7 @@ About 0.9M repos have a counted event on a 2025 day (§8a), so storing every rep
 1. **Ingest** (`ingest.gharchive`) aggregates each UTC day in memory and writes a **daily aggregate file** with counts for *every* repo: `data/daily/YYYY-MM-DD.csv.gz` plus a `.json` manifest of hour statuses (`ingest.dailyfile`). These are per-repo counts, not raw events. Names are recorded only from star/fork events.
 2. **Load** (`ingest.load`) picks the **tracked set**, the top `N` repos by weighted activity over the loaded range (default `N = 25,000`), and loads their *complete* daily history into Postgres, push-only days included.
    - Pass 1 (files): rank repos by stars + forks only and keep `N × CANDIDATE_FACTOR` (default 4) candidates. Repos that never get a star or fork can't be tracked; these are mostly bot and CI repos.
-   - Pass 2 (Postgres): COPY the candidates' rows into a temp table, rank by full weighted activity in SQL, and keep the top `N`.
+   - Pass 2 (Postgres): COPY the candidates' rows into a temp table, rank by full weighted activity (pushes capped at `PUSH_CAP` per day, §4) in SQL, and keep the top `N`.
    - A load rebuilds `repo_daily_activity` and `ingest_hours` in one transaction. `repos` is kept as a cache, so enrichment survives reloads.
 
 Changing `N` or the weights only needs a reload (minutes), never the full re-download (about 21 hours).
@@ -120,7 +123,7 @@ Changing `N` or the weights only needs a reload (minutes), never the full re-dow
 Momentum is measured by **share of total activity**, not by raw totals. GH Archive's collection volume changed during 2025: every event type dropped about 38% at once in June. Raw growth would read that as every language collapsing. Shares cancel a uniform change like that out, and "gaining relative to the rest of GitHub" is the more meaningful question anyway.
 
 ```
-activity(repo, day) = stars + 2·forks + 0.5·pushes        (weights v1: a guess)
+activity(repo, day) = stars + 2·forks + 0.5·min(pushes, PUSH_CAP)     (weights v1: a guess)
 
 For a language or topic x, a window of W days ending on as_of, and the W days before it:
 A_cur(x), A_prev(x) = Σ activity of tracked repos in x over each window
@@ -133,6 +136,7 @@ momentum(x)   = share_cur(x) / share_prev(x) − 1
 
 - `W` is the range picker value: 30, 60 or 90 (default 30).
 - `as_of` defaults to the last ingested day. Both windows must fit inside the dataset, so the earliest `as_of` is the dataset start + 2·W − 1 days (2025-06-29 for W = 90).
+- `PUSH_CAP` (default 25) limits how many pushes one repo can contribute per day. Without it, a few bot repos dominate: one repo had 2.1M pushes, 11% of all tracked pushes (§8a). 25 sits just above the 90th percentile of pushes per active repo-day (18) and keeps 53% of all pushes. The same cap is used when picking the tracked set.
 - `FLOOR` (default 100) stops tiny languages or topics from showing +5000% growth.
 - Languages or topics with fewer than `MIN_REPOS` (default 20) active tracked repos in the current window are left out of the leaderboard.
 - Repos with no language (`NULL`) still count toward `T`. Topic totals overlap (one repo, many topics), but `T` is still the plain total over repos.
@@ -140,7 +144,7 @@ momentum(x)   = share_cur(x) / share_prev(x) − 1
 
 **Things to check against real data (M3):**
 - **Is the share series continuous across 2025-06?** If the June drop was not uniform across languages, a step in a language's share would show up there. If it does, restrict comparisons to windows that don't cross the step (Jan–May or Jun–Sep).
-- Do pushes dominate? Bots and CI repos can push hundreds of times a day. Options: cap pushes per repo per day, or drop actors whose login ends in `[bot]`.
+- Is `PUSH_CAP = 25` the right cap? Compare rankings at 10, 25, 50 and 100, and with the push term dropped.
 - Is the leaderboard stable if the weights change by ±50%? If the ranking flips, the weights matter and need a justification.
 - Does a single viral repo dominate a small language? Possibly cap any one repo's share of `A_cur`.
 - Record the outcome in §8 (Decisions log).
@@ -249,6 +253,9 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 | 2026-11-04 | Ingest writes daily aggregate files for all repos; a separate load step picks the tracked set | The per-day star/fork filter dropped 96.5% of pushes; files also make reloads cheap |
 | 2026-11-04 | Daily files are built in BigQuery (`ingest.bigquery`); `ingest.gharchive` stays as the no-account fallback | ~66 GB scanned in the free tier vs a 200 GB, 21-hour download |
 | 2026-11-04 | Count all PR and issue events, not only opened ones, in both ingest paths | Reading `payload` for the action costs 3.59 TB in BigQuery; these counts are only charted |
+| 2026-11-09 | Cap pushes at 25 per repo per day (`PUSH_CAP`), in the score and in tracked-set selection | Bot repos dominated: one repo was 11% of all pushes. 25 is just above p90 (18) of pushes per repo-day |
+| 2026-11-09 | Rollups store raw sums plus `pushes_capped`, and add `total_daily` | Weights stay adjustable at query time; shares need a total that counts each repo once |
+| 2026-11-09 | Enrichment looks repos up by name and checks `databaseId` | GH Archive gives numeric ids; GraphQL follows renames, and the id check catches reused names |
 | 2026-11-04 | API takes an optional `as_of` date | With a fixed dataset, exploring different end dates is the main way to look at trends |
 
 ## 8a. M1 measurements (2026-11-04)

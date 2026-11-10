@@ -35,7 +35,7 @@ def load_dotenv(path: Path = REPO_ROOT / ".env") -> dict[str, str]:
 
 @dataclass(frozen=True)
 class Weights:
-    """activity = stars*w_stars + forks*w_forks + pushes*w_pushes (SPEC §4)."""
+    """activity = stars*w_stars + forks*w_forks + min(pushes, PUSH_CAP)*w_pushes (SPEC §4)."""
 
     stars: float = 1.0
     forks: float = 2.0
@@ -51,6 +51,13 @@ class Settings:
     http_timeout_s: float = 60.0
     fetch_retries: int = 3
     weights: Weights = field(default_factory=Weights)
+    # Momentum score (SPEC §4)
+    push_cap: int = 25  # max pushes one repo contributes per day
+    momentum_floor: float = 100.0  # minimum previous-window activity used in the ratio
+    min_repos: int = 20  # leaderboard needs this many active tracked repos
+    # Enrichment (ingest.enrich)
+    github_graphql_url: str = "https://api.github.com/graphql"
+    enrich_batch_size: int = 50
     # Tracked set (SPEC §3.2): top N repos by activity over the loaded range.
     tracked_repos: int = 25_000
     # Pass 1 of the load ranks by stars/forks only and keeps N * factor candidates,
@@ -67,6 +74,10 @@ class Settings:
             raise ValueError("fetch_retries must be >= 1")
         if self.tracked_repos < 1 or self.candidate_factor < 1:
             raise ValueError("tracked_repos and candidate_factor must be >= 1")
+        if self.push_cap < 1:
+            raise ValueError("push_cap must be >= 1")
+        if not 1 <= self.enrich_batch_size <= 100:
+            raise ValueError("enrich_batch_size must be between 1 and 100")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -86,6 +97,10 @@ class Settings:
                 forks=float(env.get("WEIGHT_FORKS", "2")),
                 pushes=float(env.get("WEIGHT_PUSHES", "0.5")),
             ),
+            push_cap=int(env.get("PUSH_CAP", "25")),
+            momentum_floor=float(env.get("MOMENTUM_FLOOR", "100")),
+            min_repos=int(env.get("MIN_REPOS", "20")),
+            enrich_batch_size=int(env.get("ENRICH_BATCH_SIZE", "50")),
             tracked_repos=int(env.get("TRACKED_REPOS", "25000")),
             candidate_factor=int(env.get("CANDIDATE_FACTOR", "4")),
             gcp_project=env.get("GOOGLE_CLOUD_PROJECT") or None,
