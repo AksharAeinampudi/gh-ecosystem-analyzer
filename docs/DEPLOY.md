@@ -58,6 +58,9 @@ free without an expiry date. If Neon's limit turns out to be 0.5 GB, lower `TRAC
 - Query times against Neon from the laptop, uncached, on one open connection: language
   leaderboard 0.4 s (30 days) to 0.9 s (90 days); topic leaderboard 1.6 s to 4.0 s. The API
   caches each result after the first request.
+- Render free web service in Ohio, at https://gh-ecosystem-analyzer.onrender.com. From the laptop:
+  `/health` 2.3 s on the first call, the language leaderboard 0.6 s uncached and 0.25 s cached,
+  a time series 0.3 s.
 - The API opens a new database connection per request, which adds a TLS handshake each time.
   A connection pool (`psycopg_pool`) is the next improvement if responses feel slow.
 

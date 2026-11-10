@@ -252,7 +252,7 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 - GitHub Actions CI on pushes to `main` and on pull requests: ruff and pytest against a Postgres service (the job fails if any test is skipped), frontend tests, lint and build, and a Docker build.
 - README: live link, screenshots, architecture, how momentum is computed, and the GH Archive coverage finding (§8a), which shows real data-quality work.
 - **Done when:** the public URL serves the full 2025 dataset, and CI runs on every PR.
-- Status 2026-11-10: the image, the compose service, the CI workflow and the dump-and-restore procedure are written and tested locally (100 tests pass on Python 3.12 in a container). The repo is on GitHub and CI passed on its first run. The data is loaded into a free Neon database (Postgres 18, 519 MB) and every endpoint was checked against it. Still to do: create the Render web service and add the live link.
+- Status 2026-11-10: the image, the compose service, the CI workflow and the dump-and-restore procedure are written and tested locally (100 tests pass on Python 3.12 in a container). The repo is on GitHub and CI passed on its first run. The data is loaded into a free Neon database (Postgres 18, 519 MB) and every endpoint was checked against it. The web service runs on Render's free plan at https://gh-ecosystem-analyzer.onrender.com; the health check, the dashboard, the API docs and each endpoint were checked on the live URL. **M5 is done.**
 
 ## 8. Decisions log
 

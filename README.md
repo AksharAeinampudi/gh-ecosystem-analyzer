@@ -8,7 +8,9 @@ This project reads all public GitHub activity from [GH Archive](https://www.ghar
 
 The dataset is a fixed snapshot, **January–September 2025**. A coverage scan of GH Archive found that from late 2025 its star and fork counts no longer reflect real GitHub activity, and from mid-2026 the data is erratic. The details are in [SPEC §8a](docs/SPEC.md#8a-m1-measurements-2026-11-04).
 
-> Status: M1–M4 done (data pipeline, momentum score, JSON API, dashboard); M5 (deploy and CI) next.
+**Live: [gh-ecosystem-analyzer.onrender.com](https://gh-ecosystem-analyzer.onrender.com)** · [API docs](https://gh-ecosystem-analyzer.onrender.com/docs)
+
+The site runs on a free plan and sleeps when idle, so the first visit can take up to a minute to load.
 
 ![The dashboard: gaining and losing languages on the left, the selected language's figures, trend and top repos on the right](docs/dashboard.png) See [docs/SPEC.md](docs/SPEC.md) for scope, data model, API and milestones.
 
@@ -112,5 +114,5 @@ docker compose --profile app up --build   # http://localhost:8080
 - [x] **M2** Enrichment + language/topic rollups + momentum query
 - [x] **M3** JSON API + validating the momentum weights
 - [x] **M4** Dashboard
-- [ ] **M5** Deploy + CI
+- [x] **M5** Deploy + CI
 - [ ] Phase 2 (optional): live mode from daily star snapshots
