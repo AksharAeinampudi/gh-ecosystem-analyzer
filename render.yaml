@@ -1,0 +1,12 @@
+# Render blueprint: one free web service built from the Dockerfile (API + dashboard).
+# The database is hosted elsewhere (see docs/DEPLOY.md); set DATABASE_URL in the Render
+# dashboard. It is a secret and is never committed.
+services:
+  - type: web
+    name: gh-ecosystem-analyzer
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
