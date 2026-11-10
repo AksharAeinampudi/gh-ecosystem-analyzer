@@ -1,5 +1,7 @@
 # GitHub Ecosystem Analyzer
 
+[![CI](https://github.com/AksharAeinampudi/gh-ecosystem-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/AksharAeinampudi/gh-ecosystem-analyzer/actions/workflows/ci.yml)
+
 Which languages and topics on GitHub are gaining or losing momentum?
 
 This project reads all public GitHub activity from [GH Archive](https://www.gharchive.org/) (stars, forks, pushes, PRs and issues opened), aggregates it per repo per day, rolls it up by language and topic, and serves a dashboard that ranks technologies by momentum: how much their share of GitHub activity grew over 30, 60 or 90 days compared with the period before.
