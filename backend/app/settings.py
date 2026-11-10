@@ -55,6 +55,9 @@ class Settings:
     push_cap: int = 25  # max pushes one repo contributes per day
     momentum_floor: float = 100.0  # minimum previous-window activity used in the ratio
     min_repos: int = 20  # leaderboard needs this many active tracked repos
+    max_top_repo_share: float = 0.5  # above this, one repo dominates ("concentrated")
+    # API
+    cors_origins: tuple[str, ...] = ("http://localhost:5173",)
     # Enrichment (ingest.enrich)
     github_graphql_url: str = "https://api.github.com/graphql"
     enrich_batch_size: int = 50
@@ -100,6 +103,12 @@ class Settings:
             push_cap=int(env.get("PUSH_CAP", "25")),
             momentum_floor=float(env.get("MOMENTUM_FLOOR", "100")),
             min_repos=int(env.get("MIN_REPOS", "20")),
+            max_top_repo_share=float(env.get("MAX_TOP_REPO_SHARE", "0.5")),
+            cors_origins=tuple(
+                o.strip()
+                for o in env.get("CORS_ORIGINS", "http://localhost:5173").split(",")
+                if o.strip()
+            ),
             enrich_batch_size=int(env.get("ENRICH_BATCH_SIZE", "50")),
             tracked_repos=int(env.get("TRACKED_REPOS", "25000")),
             candidate_factor=int(env.get("CANDIDATE_FACTOR", "4")),

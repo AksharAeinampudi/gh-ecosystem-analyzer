@@ -5,15 +5,25 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.momentum import AsOfOutOfRange, leaderboard, resolve_windows, window_bounds
+from app.momentum import (
+    AsOfOutOfRange,
+    UnknownName,
+    leaderboard,
+    meta,
+    resolve_windows,
+    timeseries,
+    top_repos,
+    window_bounds,
+)
 from app.settings import Settings
 from ingest.rollup import rebuild
 
 D1 = date(2025, 3, 1)
 D2, D3, D4 = (D1 + timedelta(days=n) for n in (1, 2, 3))
 
-# Weights 1 / 2 / 0.5, push cap 25. Floor 1 and min_repos 1 unless a test says otherwise.
-SETTINGS = Settings(push_cap=25, momentum_floor=1.0, min_repos=1)
+# Weights 1 / 2 / 0.5, push cap 25. Floor 1, min_repos 1 and no concentration filter unless a
+# test says otherwise.
+SETTINGS = Settings(push_cap=25, momentum_floor=1.0, min_repos=1, max_top_repo_share=1.0)
 
 
 def test_window_bounds():
@@ -162,3 +172,75 @@ def test_as_of_must_leave_room_for_both_windows(scored_db):
 def test_empty_rollups_raise(db):
     with pytest.raises(AsOfOutOfRange):
         resolve_windows(db, 30, None)
+
+
+@pytest.mark.db
+def test_concentrated_entries_are_hidden_unless_asked(scored_db):
+    # Top repo share of current activity: Rust 30/42.5 = 0.706 (repo 1), Python 20/20 = 1.0.
+    half = replace(SETTINGS, max_top_repo_share=0.5)
+    assert leaderboard(scored_db, half, window=2)[1] == []
+    _, rows = leaderboard(scored_db, half, window=2, include_concentrated=True)
+    assert [(r.name, r.concentrated) for r in rows] == [("Rust", True), ("Python", True)]
+    assert [r.top_repo_share for r in rows] == pytest.approx([30 / 42.5, 1.0])
+    # A threshold between the two keeps Rust and hides Python.
+    _, rows = leaderboard(scored_db, replace(SETTINGS, max_top_repo_share=0.8), window=2)
+    assert [(r.name, r.concentrated) for r in rows] == [("Rust", False)]
+
+
+@pytest.mark.db
+def test_timeseries_covers_both_windows_with_shares(scored_db):
+    # Day totals: D1 10 + 40 = 50, D2 10 + 40 = 50, D3 30 + 20 = 50, D4 12.5 + 37.5 = 50.
+    w, points = timeseries(scored_db, SETTINGS, dimension="language", name="Rust", window=2)
+    assert (w.prev_start, w.as_of) == (D1, D4)
+    assert [p.day for p in points] == [D1, D2, D3, D4]
+    assert [p.activity for p in points] == pytest.approx([10, 10, 30, 12.5])
+    assert [p.share for p in points] == pytest.approx([0.2, 0.2, 0.6, 0.25])
+    assert (points[3].pushes, points[1].forks) == (100, 5)  # raw counts, not capped
+
+
+@pytest.mark.db
+def test_timeseries_fills_days_without_activity(scored_db):
+    _, points = timeseries(scored_db, SETTINGS, dimension="language", name="Python", window=2)
+    assert [(p.day, p.stars, p.share) for p in points] == [
+        (D1, 40, pytest.approx(0.8)),
+        (D2, 0, 0),
+        (D3, 20, pytest.approx(0.4)),
+        (D4, 0, 0),
+    ]
+
+
+@pytest.mark.db
+def test_unknown_name_raises(scored_db):
+    with pytest.raises(UnknownName):
+        timeseries(scored_db, SETTINGS, dimension="language", name="COBOL", window=2)
+    with pytest.raises(UnknownName):
+        top_repos(scored_db, SETTINGS, dimension="topic", name="Rust", window=2)
+
+
+@pytest.mark.db
+def test_top_repos_by_change(scored_db):
+    # Rust: repo 1 goes 10 -> 30 (+20), repo 2 goes 10 -> 12.5 (+2.5).
+    _, repos = top_repos(scored_db, SETTINGS, dimension="language", name="Rust", window=2)
+    assert [(r.full_name, r.activity_previous, r.activity_current, r.delta) for r in repos] == [
+        ("a/one", 10.0, 30.0, 20.0),
+        ("b/two", 10.0, 12.5, 2.5),
+    ]
+    assert repos[0].url == "https://github.com/a/one"
+
+
+@pytest.mark.db
+def test_top_repos_for_a_topic_and_biggest_drops(scored_db):
+    # web: repo 1 +20, repo 3 goes 40 -> 20 (-20).
+    _, drops = top_repos(
+        scored_db, SETTINGS, dimension="topic", name="web", window=2, order="asc", limit=1
+    )
+    assert [(r.full_name, r.delta) for r in drops] == [("c/three", -20.0)]
+
+
+@pytest.mark.db
+def test_meta(scored_db, db):
+    m = meta(scored_db)
+    assert m is not None
+    assert (m.earliest_day, m.latest_day, m.tracked_repos) == (D1, D4, 4)
+    db.execute("TRUNCATE total_daily")
+    assert meta(db) is None
