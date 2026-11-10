@@ -185,10 +185,12 @@ Shared params: `dimension` = `language` | `topic`, `window` = `30` | `60` | `90`
 ```
 
 ### `GET /api/v1/timeseries?dimension=language&name=Rust&window=90`
-Daily points covering the current window plus the previous one (so 2·W days), letting the chart show both periods. `share` is that day's activity divided by the day's total over all tracked repos; the dashboard charts it by default.
+Daily points covering the current window plus the previous one (so 2·W days), letting the chart show both periods. `share` is that day's activity divided by the day's total over all tracked repos; the dashboard charts it by default. `summary` holds the leaderboard figures for this one name (same formula, `FLOOR` included), so any language or topic can be looked up even when it isn't on the leaderboard; `momentum` is `null` when a window has no activity.
 ```json
 { "name": "Rust", "dimension": "language", "window": 90, "as_of": "2025-09-30",
   "current": ["2025-07-03", "2025-09-30"], "previous": ["2025-04-04", "2025-07-02"],
+  "summary": { "activity_current": 0.0, "activity_previous": 0.0,
+               "share_current": 0.0, "share_previous": 0.0, "momentum": 0.0 },
   "points": [ { "day": "2025-04-04", "stars": 0, "forks": 0, "pushes": 0,
                 "pr_events": 0, "issue_events": 0, "activity": 0.0,
                 "share": 0.0 } ] }
@@ -271,6 +273,7 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 | 2026-11-09 | Leaderboard hides entries where one repo is over half of current activity (`MAX_TOP_REPO_SHARE = 0.5`), unless asked | The first real leaderboard was topped by Scala and Assembly, each driven by a single viral repo |
 | 2026-11-09 | Keep `PUSH_CAP = 25` and weights 1 / 2 / 0.5 | Rankings are stable across caps 10–100 and weights ±50% (Spearman ≥ 0.975) |
 | 2026-11-09 | API caches leaderboard and meta results in memory | The dataset is fixed, and the topic leaderboard takes up to 3 s uncached |
+| 2026-11-10 | Timeseries response carries a `summary` (momentum and shares for that name) | The dashboard needs the figures for any name a user looks up, e.g. Python, which is never in a top 10 |
 | 2026-11-04 | API takes an optional `as_of` date | With a fixed dataset, exploring different end dates is the main way to look at trends |
 
 ## 8a. M1 measurements (2026-11-04)

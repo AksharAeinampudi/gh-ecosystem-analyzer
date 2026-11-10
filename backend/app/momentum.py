@@ -61,6 +61,17 @@ class TimeseriesPoint:
 
 
 @dataclass(frozen=True)
+class WindowSummary:
+    """The leaderboard figures for one name, whether or not it makes the leaderboard."""
+
+    activity_current: float
+    activity_previous: float
+    share_current: float
+    share_previous: float
+    momentum: float | None  # None when a window has no activity at all
+
+
+@dataclass(frozen=True)
 class TopRepo:
     full_name: str
     activity_current: float
@@ -213,7 +224,8 @@ SELECT g.day::date,
        coalesce(x.stars, 0), coalesce(x.forks, 0), coalesce(x.pushes, 0),
        coalesce(x.pr_events, 0), coalesce(x.issue_events, 0),
        coalesce(x.activity, 0) AS activity,
-       CASE WHEN t.activity > 0 THEN coalesce(x.activity, 0) / t.activity ELSE 0 END AS share
+       CASE WHEN t.activity > 0 THEN coalesce(x.activity, 0) / t.activity ELSE 0 END AS share,
+       coalesce(t.activity, 0) AS total
 FROM generate_series(%(prev_start)s::date, %(as_of)s::date, interval '1 day') AS g(day)
 LEFT JOIN (
     SELECT day, stars, forks, pushes, pr_events, issue_events, {rollup_activity} AS activity
@@ -328,8 +340,11 @@ def timeseries(
     name: str,
     window: int = 30,
     as_of: date | None = None,
-) -> tuple[Windows, list[TimeseriesPoint]]:
-    """One point per day across both windows (2*W days); days with no activity are zeros."""
+) -> tuple[Windows, list[TimeseriesPoint], WindowSummary]:
+    """One point per day across both windows (2*W days); days with no activity are zeros.
+
+    The summary applies the same formula as the leaderboard (FLOOR included) to this one name.
+    """
     dim = _DIMS[dimension]
     w = resolve_windows(conn, window, as_of)
     _require_name(conn, dim, dimension, name)
@@ -337,9 +352,18 @@ def timeseries(
         table=dim.table, name_col=dim.name_col, rollup_activity=_ROLLUP_ACTIVITY
     )
     rows = conn.execute(query, _params(settings, w, name=name)).fetchall()
-    return w, [
+    points = [
         TimeseriesPoint(r[0], r[1], r[2], r[3], r[4], r[5], float(r[6]), float(r[7])) for r in rows
     ]
+    a_cur = sum(float(r[6]) for r in rows if r[0] >= w.cur_start)
+    a_prev = sum(float(r[6]) for r in rows if r[0] < w.cur_start)
+    t_cur = sum(float(r[8]) for r in rows if r[0] >= w.cur_start)
+    t_prev = sum(float(r[8]) for r in rows if r[0] < w.cur_start)
+    share_cur = a_cur / t_cur if t_cur else 0.0
+    share_prev = a_prev / t_prev if t_prev else 0.0
+    floored_prev = max(a_prev, settings.momentum_floor) / t_prev if t_prev else 0.0
+    momentum = share_cur / floored_prev - 1 if t_cur and floored_prev else None
+    return w, points, WindowSummary(a_cur, a_prev, share_cur, share_prev, momentum)
 
 
 def top_repos(

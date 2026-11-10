@@ -190,7 +190,13 @@ def test_concentrated_entries_are_hidden_unless_asked(scored_db):
 @pytest.mark.db
 def test_timeseries_covers_both_windows_with_shares(scored_db):
     # Day totals: D1 10 + 40 = 50, D2 10 + 40 = 50, D3 30 + 20 = 50, D4 12.5 + 37.5 = 50.
-    w, points = timeseries(scored_db, SETTINGS, dimension="language", name="Rust", window=2)
+    w, points, summary = timeseries(
+        scored_db, SETTINGS, dimension="language", name="Rust", window=2
+    )
+    # Same figures as the leaderboard row: 42.5/100 against 20/100.
+    assert (summary.activity_current, summary.activity_previous) == (42.5, 20.0)
+    assert (summary.share_current, summary.share_previous) == pytest.approx((0.425, 0.2))
+    assert summary.momentum == pytest.approx(1.125)
     assert (w.prev_start, w.as_of) == (D1, D4)
     assert [p.day for p in points] == [D1, D2, D3, D4]
     assert [p.activity for p in points] == pytest.approx([10, 10, 30, 12.5])
@@ -200,7 +206,7 @@ def test_timeseries_covers_both_windows_with_shares(scored_db):
 
 @pytest.mark.db
 def test_timeseries_fills_days_without_activity(scored_db):
-    _, points = timeseries(scored_db, SETTINGS, dimension="language", name="Python", window=2)
+    _, points, _ = timeseries(scored_db, SETTINGS, dimension="language", name="Python", window=2)
     assert [(p.day, p.stars, p.share) for p in points] == [
         (D1, 40, pytest.approx(0.8)),
         (D2, 0, 0),

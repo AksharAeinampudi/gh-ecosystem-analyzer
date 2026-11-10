@@ -70,8 +70,17 @@ class TimeseriesPointOut(BaseModel):
     share: float
 
 
+class WindowSummaryOut(BaseModel):
+    activity_current: float
+    activity_previous: float
+    share_current: float
+    share_previous: float
+    momentum: float | None
+
+
 class TimeseriesOut(WindowInfo):
     name: str
+    summary: WindowSummaryOut
     points: list[TimeseriesPointOut]
 
 

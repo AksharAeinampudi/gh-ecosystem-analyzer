@@ -153,6 +153,13 @@ def test_leaderboard_rejects_bad_params(client, params):
 def test_timeseries(client):
     body = client.get("/api/v1/timeseries", params={"name": "Rust"}).json()
     assert (body["name"], body["dimension"], body["window"]) == ("Rust", "language", 30)
+    assert body["summary"] == {
+        "activity_current": 42.5,
+        "activity_previous": 20.0,
+        "share_current": pytest.approx(0.425),
+        "share_previous": pytest.approx(0.2),
+        "momentum": pytest.approx(1.125),
+    }
     points = body["points"]
     assert len(points) == 60
     assert (points[0]["day"], points[-1]["day"]) == ("2025-03-01", "2025-04-29")

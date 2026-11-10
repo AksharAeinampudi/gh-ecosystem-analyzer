@@ -169,12 +169,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         window: WindowQ = Window.D30,
         as_of: AsOfQ = None,
     ) -> dict[str, Any]:
-        w, points = momentum.timeseries(
+        w, points, summary = momentum.timeseries(
             conn, settings, dimension=dimension, name=name, window=window.value, as_of=as_of
         )
         return {
             **_window_info(dimension, window.value, w),
             "name": name,
+            "summary": asdict(summary),
             "points": [asdict(p) for p in points],
         }
 
