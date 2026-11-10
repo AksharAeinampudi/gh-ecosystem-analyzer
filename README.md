@@ -68,7 +68,7 @@ Pushes are capped at 25 per repo per day, because a handful of bot repos otherwi
 | API | FastAPI, psycopg 3, raw SQL |
 | Frontend | React, Vite, TypeScript, Recharts |
 | Quality | pytest, ruff |
-| Deploy | Docker → Fly.io or Render |
+| Deploy | Docker → Render (web) + Neon (Postgres); CI on GitHub Actions |
 
 ## Local development
 
@@ -95,6 +95,14 @@ pytest && ruff check . && ruff format --check .
 ```
 
 `.env` is git-ignored; never commit a token. A fine-grained GitHub token with read-only access to public repositories is enough.
+
+## Deploying
+
+One Docker image serves the API and the dashboard; the database is a hosted Postgres loaded from a local dump. See [docs/DEPLOY.md](docs/DEPLOY.md). To try the production image locally:
+
+```bash
+docker compose --profile app up --build   # http://localhost:8080
+```
 
 ## Roadmap
 

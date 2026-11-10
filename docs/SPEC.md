@@ -247,10 +247,12 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 - Built 2026-11-10. One filter row (languages or topics, 30/60/90 days, end date, a lookup box for any name, a toggle for single-repo spikes) scopes everything below it: the gaining and losing lists, and for the selected entry its headline figures, a daily trend (previous window in gray, current in blue, 7-day average by default, with a table of the same numbers) and the repos behind the change. A note appears when the comparison spans 2025-06-01. Checked by hand at desktop and phone widths, in light and dark mode.
 
 ### M5 — Deploy
-- Dockerfiles (API serves the built frontend, or two services), deploy to Fly.io or Render with a hosted Postgres loaded from the local backfill (`pg_dump` of the slim tables).
-- GitHub Actions: CI (ruff, pytest, frontend build) on PRs.
+- One Docker image: the API also serves the built dashboard (`STATIC_DIR`). `docker compose --profile app up --build` runs it locally.
+- Hosted Postgres loaded from a local `pg_dump` (42 MB dump, about 520 MB restored). Steps and hosting options are in `docs/DEPLOY.md`; the recommended setup is a free Render web service plus a free Neon database.
+- GitHub Actions CI on pushes to `main` and on pull requests: ruff and pytest against a Postgres service (the job fails if any test is skipped), frontend tests, lint and build, and a Docker build.
 - README: live link, screenshots, architecture, how momentum is computed, and the GH Archive coverage finding (§8a), which shows real data-quality work.
 - **Done when:** the public URL serves the full 2025 dataset, and CI runs on every PR.
+- Status 2026-11-10: the image, the compose service, the CI workflow and the dump-and-restore procedure are written and tested locally (100 tests pass on Python 3.12 in a container). Still to do: push to GitHub, create the hosted database and web service, and add the live link.
 
 ## 8. Decisions log
 
@@ -276,6 +278,8 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 | 2026-11-09 | API caches leaderboard and meta results in memory | The dataset is fixed, and the topic leaderboard takes up to 3 s uncached |
 | 2026-11-10 | Timeseries response carries a `summary` (momentum and shares for that name) | The dashboard needs the figures for any name a user looks up, e.g. Python, which is never in a top 10 |
 | 2026-11-10 | Dashboard leaderboard rows are an HTML list with inline bars; Recharts draws the trend chart | Rows need several text columns and to be clickable and keyboard-reachable; a chart library adds nothing there |
+| 2026-11-10 | One container serves both the API and the dashboard | One free web service to deploy and no CORS setup in production |
+| 2026-11-10 | Recommended hosting: Render (web) + Neon (Postgres), both free | Fly.io has no free tier for new accounts; Render's free Postgres is deleted after 30 days |
 | 2026-11-04 | API takes an optional `as_of` date | With a fixed dataset, exploring different end dates is the main way to look at trends |
 
 ## 8a. M1 measurements (2026-11-04)
