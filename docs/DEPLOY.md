@@ -40,13 +40,26 @@ free without an expiry date. If Neon's limit turns out to be 0.5 GB, lower `TRAC
    ```
 4. **Load it into the hosted database** (bash; reads `PROD_DATABASE_URL` from `.env`):
    ```bash
-   docker run --rm --env-file .env -v "$(pwd)/data:/data" postgres:16 sh -c 'pg_restore --no-owner --no-acl -d "$PROD_DATABASE_URL" /data/gea.dump'
+   export PROD_DATABASE_URL="$(grep '^PROD_DATABASE_URL=' .env | cut -d= -f2-)"
+   docker run --rm -e PROD_DATABASE_URL -v "$(pwd)/data:/data:ro" postgres:18 sh -c 'pg_restore --no-owner --no-acl --jobs 2 -d "$PROD_DATABASE_URL" /data/gea.dump'
    ```
-   The dump includes `schema_migrations`, so the app sees the schema as up to date.
+   Use a `postgres` image at least as new as the hosted server, and the direct connection
+   string, not the pooled one. The dump includes `schema_migrations`, so the app sees the schema
+   as up to date. Then run `ANALYZE` once on the hosted database so the planner has statistics.
 5. **Create the web service.** In Render, choose New → Blueprint and pick the repo; it reads
    `render.yaml`. Set `DATABASE_URL` to the Neon connection string when asked.
 6. **Check it.** `/health` should return `{"status":"ok"}`, `/` the dashboard, and `/docs` the
    API reference.
+
+## First deployment (2026-11-10)
+
+- Neon free project on Postgres 18.6 in `us-east-2`. The restore took 52 s and every table's
+  row count matches the local database (4,860,979 activity rows). Size on Neon: 519 MB.
+- Query times against Neon from the laptop, uncached, on one open connection: language
+  leaderboard 0.4 s (30 days) to 0.9 s (90 days); topic leaderboard 1.6 s to 4.0 s. The API
+  caches each result after the first request.
+- The API opens a new database connection per request, which adds a TLS handshake each time.
+  A connection pool (`psycopg_pool`) is the next improvement if responses feel slow.
 
 ## Try the production image locally
 
