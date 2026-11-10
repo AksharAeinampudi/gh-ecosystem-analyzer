@@ -349,7 +349,7 @@ BigQuery bills every column it reads, and `payload` is almost all of the data. C
 
 ### BigQuery ingest run (2026-11-05)
 
-`python -m ingest.bigquery` for 2025-01-01 → 2025-09-30 in project `complete-road-513804-i0`:
+`python -m ingest.bigquery` for 2025-01-01 → 2025-09-30 in a BigQuery sandbox project:
 
 | Metric | Value |
 |---|---|
