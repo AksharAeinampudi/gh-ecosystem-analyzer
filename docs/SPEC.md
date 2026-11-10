@@ -351,6 +351,14 @@ BigQuery bills every column it reads, and `payload` is almost all of the data. C
 
 **Finding: a few bot repos dominate the push term.** The top repo by activity is `SoliSpirit/v2ray-configs` with 2.1M pushes and 158 stars; `likhonsible/Flash-USDT-Sender` (638k pushes, 56 stars) and `rust-lang/crates.io-index` (279k pushes) are also in the top five. The top repo alone is about 11% of all tracked pushes. This confirms the §4 concern, and M2/M3 must cap pushes per repo per day (or drop the push term) before the leaderboard means anything.
 
+### Reload with the push cap (2026-11-09)
+
+After adding `PUSH_CAP = 25` (§4) and reloading: 25,000 tracked repos, 4,860,979 rows, rollups rebuilt in about 1 s.
+
+- The top five repos by activity are now `n8n-io/n8n`, `deepseek-ai/DeepSeek-V3`, `deepseek-ai/DeepSeek-R1`, `x1xhlol/system-prompts-and-models-of-ai-tools` and `codecrafters-io/build-your-own-x`. The bot repos are gone from the top.
+- Activity mix over the whole period: stars 21.8M, forks (×2) 9.1M, capped pushes (×0.5) 5.1M. Pushes are now about 14% of activity, down from 24% uncapped.
+- Total monthly activity falls from about 4.7M (Jan–May) to about 3.1M (Jun–Sep), the same uniform drop the coverage scan found. Shares are meant to cancel it; M3 checks that they do.
+
 **Problem found: the per-day threshold distorts pushes, PRs and issues.** A tracked repo's pushes only count on days it also gets a star or fork, so 96.5% of pushes are dropped and the push term in `activity` is biased toward star days. See §9 for the fix.
 
 ## 9. Open questions

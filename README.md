@@ -22,7 +22,7 @@ flowchart LR
         FILES[(daily aggregate files<br/>all repos, ~1 per day)]
         LOAD[load<br/>pick top-N tracked repos]
         ENR[enrich<br/>language + topics<br/>for tracked repos]
-        ROL[rollup<br/>SQL]
+        ROL[rollup<br/>SQL, pushes capped]
     end
 
     subgraph DB["PostgreSQL 16"]
@@ -68,9 +68,23 @@ momentum  = share in the last W days / share in the W days before − 1
 
 ## Local development
 
-_Setup instructions land with M1._ Prerequisites: Python 3.12, Docker Desktop, Node 20+.
+Prerequisites: Python 3.12+, Docker Desktop, a Google Cloud project for BigQuery (the free sandbox is enough), and a GitHub token for enrichment. Node 20+ is needed from M4 on.
 
-The enrichment step needs a GitHub token in the `GITHUB_TOKEN` environment variable. A fine-grained token with public read-only access is enough. Put it in `.env`, which is git-ignored, and never commit it.
+```bash
+cp .env.example .env            # then fill in GOOGLE_CLOUD_PROJECT and GITHUB_TOKEN
+docker compose up -d --wait     # Postgres 16
+cd backend
+python -m venv .venv && .venv/Scripts/pip install -e ".[dev,bigquery]"   # bin/ on macOS/Linux
+python -m app.migrate           # create tables
+python -m ingest.bigquery --dry-run   # free: shows how much each query would scan
+python -m ingest.bigquery       # build data/daily/*.csv.gz (~96 GB of the 1 TB free tier)
+python -m ingest.load           # pick the top 25,000 repos and load them (~2 min)
+python -m ingest.enrich         # language and topics from GitHub (resumable)
+python -m ingest.rollup         # rebuild language/topic/total rollups (~1 s)
+pytest && ruff check . && ruff format --check .
+```
+
+`.env` is git-ignored; never commit a token. A fine-grained GitHub token with read-only access to public repositories is enough.
 
 ## Roadmap
 
