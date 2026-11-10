@@ -6,9 +6,9 @@ Conventions for working in this repo. Scope, data model, API and milestones live
 
 ```
 backend/
-  app/          FastAPI app: routes, SQL queries, settings
+  app/          FastAPI app: main.py (routes), momentum.py (SQL queries), schemas.py, settings.py
   ingest/       gharchive.py + dailyfile.py + load.py (M1), enrich.py, rollup.py (M2)
-  scripts/      one-off analysis (GH Archive coverage scan)
+  scripts/      one-off analysis (GH Archive coverage scan, score checks)
   tests/        pytest; fixtures/ holds small .json.gz samples
 db/migrations/  0001_init.sql, 0002_... (plain SQL, applied in order)
 frontend/       Vite + React + TS + Recharts

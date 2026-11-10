@@ -51,6 +51,8 @@ The same events are published as BigQuery tables, `githubarchive.day.YYYYMMDD`. 
 
 GH Archive events don't include a repo's language or topics. The enrichment step fetches `primaryLanguage`, `repositoryTopics` and `stargazerCount` for **tracked repos only** (see §3.2), batching about 50 repos per GraphQL query with aliases. It must respect `rateLimit.remaining` and back off when the limit runs low. The token comes from the `GITHUB_TOKEN` env var and is never committed or logged.
 
+**Caveat:** language and topics are what GitHub reports on the day enrichment runs, not what they were in 2025. A repo that changed its main language or added topics since then is counted under the new ones for the whole period. Topics are the more affected of the two.
+
 ## 3. Data model (PostgreSQL 16)
 
 All dates are UTC days.
@@ -144,12 +146,13 @@ momentum(x)   = share_cur(x) / share_prev(x) − 1
 - Repos with no language (`NULL`) still count toward `T`. Topic totals overlap (one repo, many topics), but `T` is still the plain total over repos.
 - PR and issue events are stored and charted but carry no weight in v1.
 
-**Things to check against real data (M3):**
-- **Is the share series continuous across 2025-06?** If the June drop was not uniform across languages, a step in a language's share would show up there. If it does, restrict comparisons to windows that don't cross the step (Jan–May or Jun–Sep).
-- Is `PUSH_CAP = 25` the right cap? Compare rankings at 10, 25, 50 and 100, and with the push term dropped.
-- Is the leaderboard stable if the weights change by ±50%? If the ranking flips, the weights matter and need a justification.
-- Does a single viral repo dominate a small language? Possibly cap any one repo's share of `A_cur`.
-- Record the outcome in §8 (Decisions log).
+- `MAX_TOP_REPO_SHARE` (default 0.5): a language or topic is **concentrated** when its largest repo makes up more than this share of its current-window activity. Concentrated entries are left out of the leaderboard unless `include_concentrated=true`, because their momentum describes one repo, not the language. Every entry reports its `top_repo_share`.
+
+**Checked against real data in M3** (`python -m scripts.weight_analysis`; full numbers in §8a):
+- **Push cap:** rankings barely move between caps of 10 and 100 (Spearman ≥ 0.975 against cap 25), but with no cap they do (0.95 at W = 30, 0.83 at W = 90). A cap is needed; its exact value is not sensitive. 25 stays.
+- **Weights:** moving any weight by ±50% keeps Spearman ≥ 0.98 and at least 9 of the top 10 gainers. The 1 / 2 / 0.5 weights stay.
+- **June 2025:** shares mostly cancel the 38% volume drop, but not fully. The median May→June change in share for the 12 largest languages is about 8%, against about 4–5% for a typical month. Comparisons whose two windows straddle 2025-06-01 are noisier, and the dashboard should say so.
+- **Single viral repo:** in 6 of 80 top-10 slots across eight 30-day windows, one repo was more than half of the language's activity. Handled by `MAX_TOP_REPO_SHARE`.
 
 ## 5. API
 
@@ -164,39 +167,44 @@ Shared params: `dimension` = `language` | `topic`, `window` = `30` | `60` | `90`
 ```json
 { "earliest_day": "2025-01-01", "latest_day": "2025-09-30",
   "windows": [30, 60, 90], "tracked_repos": 25000,
-  "weights": {"stars": 1, "forks": 2, "pushes": 0.5} }
+  "weights": {"stars": 1, "forks": 2, "pushes": 0.5},
+  "push_cap": 25, "floor": 100, "min_repos": 20, "max_top_repo_share": 0.5 }
 ```
 
 ### `GET /api/v1/leaderboard?dimension=language&window=30&limit=20&order=desc`
-`order=desc` gives gainers and `asc` gives decliners.
+`order=desc` gives gainers and `asc` gives decliners. `limit` is 1–100. `include_concentrated=true` also returns entries dominated by one repo (§4); they are marked `"concentrated": true`.
 ```json
 { "dimension": "language", "window": 30, "as_of": "2025-09-30",
+  "current": ["2025-09-01", "2025-09-30"], "previous": ["2025-08-02", "2025-08-31"],
   "items": [
     { "rank": 1, "name": "Zig", "momentum": 0.42,
       "share_current": 0.0031, "share_previous": 0.0022,
       "activity_current": 18234.5, "activity_previous": 12840.0,
-      "active_repos": 311 }
+      "active_repos": 311, "top_repo_share": 0.12, "concentrated": false }
   ] }
 ```
 
 ### `GET /api/v1/timeseries?dimension=language&name=Rust&window=90`
 Daily points covering the current window plus the previous one (so 2·W days), letting the chart show both periods. `share` is that day's activity divided by the day's total over all tracked repos; the dashboard charts it by default.
 ```json
-{ "name": "Rust", "dimension": "language", "as_of": "2025-09-30",
+{ "name": "Rust", "dimension": "language", "window": 90, "as_of": "2025-09-30",
+  "current": ["2025-07-03", "2025-09-30"], "previous": ["2025-04-04", "2025-07-02"],
   "points": [ { "day": "2025-04-04", "stars": 0, "forks": 0, "pushes": 0,
                 "pr_events": 0, "issue_events": 0, "activity": 0.0,
                 "share": 0.0 } ] }
 ```
 
 ### `GET /api/v1/top-repos?dimension=language&name=Rust&window=30&limit=10`
-The repos ranked by their contribution to the change (`A_cur − A_prev` for that repo).
+The repos ranked by their contribution to the change (`A_cur − A_prev` for that repo). `order=desc` (default) lists the biggest gains first, `asc` the biggest drops. `limit` is 1–50. The response carries the same `dimension`, `window`, `as_of`, `current` and `previous` fields as the leaderboard.
 ```json
-{ "items": [ { "full_name": "owner/repo", "activity_current": 0.0,
+{ "name": "Rust", "items": [ { "full_name": "owner/repo", "activity_current": 0.0,
                "activity_previous": 0.0, "delta": 0.0,
                "stars_total": 0, "url": "https://github.com/owner/repo" } ] }
 ```
 
-Errors: an unknown `dimension` or `window`, or an `as_of` outside the allowed range, gives 422. An unknown `name` gives 404.
+Errors: an unknown `dimension` or `window`, or an `as_of` outside the allowed range, gives 422. An unknown `name` gives 404. A database that can't be reached gives 503.
+
+**Caching:** the dataset only changes when the pipeline is re-run, so the API keeps leaderboard and meta results in memory for the life of the process (an LRU of 512 entries). Restart the API after a reload. Uncached, the slowest query is the 90-day topic leaderboard at about 3 s; a language leaderboard takes 0.2–0.6 s.
 
 ## 6. Architecture summary
 
@@ -260,6 +268,9 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 | 2026-11-09 | Enrichment looks repos up by name and checks `databaseId` | GH Archive gives numeric ids; GraphQL follows renames, and the id check catches reused names |
 | 2026-11-09 | `topic_daily` keeps only topics with at least `MIN_REPOS` tracked repos | All 35,444 topics made 8.2M rows; rarer topics can't reach the leaderboard |
 | 2026-11-09 | Enrichment sends 4 requests in parallel (`--workers 4`) | 8 triggered GitHub's secondary rate limit and was slower |
+| 2026-11-09 | Leaderboard hides entries where one repo is over half of current activity (`MAX_TOP_REPO_SHARE = 0.5`), unless asked | The first real leaderboard was topped by Scala and Assembly, each driven by a single viral repo |
+| 2026-11-09 | Keep `PUSH_CAP = 25` and weights 1 / 2 / 0.5 | Rankings are stable across caps 10–100 and weights ±50% (Spearman ≥ 0.975) |
+| 2026-11-09 | API caches leaderboard and meta results in memory | The dataset is fixed, and the topic leaderboard takes up to 3 s uncached |
 | 2026-11-04 | API takes an optional `as_of` date | With a fixed dataset, exploring different end dates is the main way to look at trends |
 
 ## 8a. M1 measurements (2026-11-04)
@@ -392,6 +403,38 @@ Share of activity over the whole period: Python 23.2%, TypeScript 16.2%, JavaScr
 - The numbers are believable, which meets the M2 "done when". The two top gainers are each driven by one repo: `twitter/the-algorithm` gave Scala 2,066 of its September stars, and `microsoft/BASIC-M6502` (open-sourced that month) gave Assembly 2,163. This is the "single viral repo" case from §4, for M3 to handle (for example a cap on one repo's share, or a higher `MIN_REPOS`).
 - Keeping every topic made `topic_daily` 8.2M rows (35,444 topics) and the rollup took 78 s. Topics with fewer than `MIN_REPOS` tracked repos can never reach the leaderboard, so the rollup now drops them: 994 topics, 271k rows, 8 s.
 
+### Score checks (M3, 2026-11-09)
+
+`python -m scripts.weight_analysis`, computed straight from `repo_daily_activity` as of 2025-09-30. "Spearman" is the rank correlation of momentum across the 42 languages with at least 20 active repos, against the baseline (cap 25, weights 1 / 2 / 0.5).
+
+| Variant | Spearman, W = 30 | Spearman, W = 90 | Top-10 gainers shared (W = 30) |
+|---|---|---|---|
+| Push cap 10 | 0.996 | 0.981 | 9/10 |
+| Push cap 50 | 0.998 | 0.988 | 10/10 |
+| Push cap 100 | 0.994 | 0.975 | 10/10 |
+| No cap | 0.950 | 0.830 | 9/10 |
+| No push term | 0.988 | 0.962 | 9/10 |
+| Stars ×0.5 / ×1.5 | 0.980 / 0.996 | — | 10/10, 9/10 |
+| Forks ×0.5 / ×1.5 | 0.994 / 0.994 | — | 9/10, 10/10 |
+| Pushes ×0.5 / ×1.5 | 0.995 / 0.995 | — | 9/10, 10/10 |
+
+**June 2025 continuity.** Monthly share of activity (%) for the largest languages:
+
+| Language | Jan | Feb | Mar | Apr | May | Jun | Jul | Aug | Sep | May→Jun | Typical month |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Python | 23.2 | 23.9 | 24.9 | 22.6 | 23.4 | 21.5 | 22.4 | 23.3 | 22.9 | −8.4% | 3.9% |
+| TypeScript | 15.2 | 15.8 | 15.6 | 16.3 | 15.4 | 16.8 | 17.6 | 18.0 | 16.6 | +9.3% | 4.5% |
+| JavaScript | 6.5 | 6.6 | 7.0 | 6.8 | 6.6 | 6.7 | 6.6 | 6.6 | 7.2 | +2.5% | 3.1% |
+| Go | 5.6 | 5.7 | 6.1 | 6.2 | 5.8 | 6.1 | 5.9 | 6.0 | 6.3 | +4.6% | 3.9% |
+| Rust | 5.4 | 5.0 | 5.2 | 5.5 | 5.9 | 5.7 | 5.3 | 5.2 | 5.4 | −3.8% | 6.2% |
+| C++ | 4.1 | 4.6 | 4.7 | 4.0 | 4.3 | 3.9 | 3.8 | 3.9 | 4.2 | −8.8% | 5.8% |
+
+Raw volume fell 38% in June, while shares moved by a median of about 8% across the 12 largest languages, 1.4 times a typical month. Shares remove most of the break but not all of it. Jupyter Notebook is the outlier (+58% in June, then back).
+
+**Concentration.** Across eight 30-day windows (as-of dates a month apart, March to September), 6 of the 80 top-10 gainer slots had one repo above 50% of the language's current activity, and 14 of 80 above 30%. As of 2025-09-30 the median top-repo share over the 42 languages is 13%; 3 are above 50% (Scala 57%, Assembly 52% among them). With `MAX_TOP_REPO_SHARE = 0.5`, the 30-day gainers become TeX, Haskell, Swift, Solidity, GDScript.
+
+**API timings on the laptop** (uncached): language leaderboard 0.2 s (W = 30) to 0.6 s (W = 90); topic leaderboard 1.4 s to 3.0 s; time series 0.01 s; top repos 0.05 s. Cached responses return in about 20 ms.
+
 **Problem found: the per-day threshold distorts pushes, PRs and issues.** A tracked repo's pushes only count on days it also gets a star or fork, so 96.5% of pushes are dropped and the push term in `activity` is biased toward star days. See §9 for the fix.
 
 ## 9. Open questions
@@ -403,4 +446,6 @@ Share of activity over the whole period: Python 23.2%, TypeScript 16.2%, JavaScr
 - `CANDIDATE_FACTOR`: check after the backfill whether full weighted activity ever ranks a repo into the top `N` from outside the candidates. If it does, raise the factor.
 - Tracked-set size `N`: settle after the backfill, using the daily files.
 - Backfill time: roughly 200 GB and ~21 h sequential. Two or three days processed in parallel should cut that substantially if bandwidth allows. Run it in monthly chunks; finished days are skipped on re-run.
+- The dashboard should show a note when the two windows straddle 2025-06-01, since that comparison is noisier (§4).
+- Topic leaderboards take 1.4–3 s uncached. If that matters after deploy, precompute per-repo window sums or restrict the per-repo scan to kept topics.
 - Hosted Postgres size limits on Fly.io or Render free tiers will decide the final `N`.

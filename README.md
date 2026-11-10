@@ -6,7 +6,7 @@ This project reads all public GitHub activity from [GH Archive](https://www.ghar
 
 The dataset is a fixed snapshot, **January–September 2025**. A coverage scan of GH Archive found that from late 2025 its star and fork counts no longer reflect real GitHub activity, and from mid-2026 the data is erratic. The details are in [SPEC §8a](docs/SPEC.md#8a-m1-measurements-2026-11-04).
 
-> Status: M1 and M2 done (data loaded, enriched, momentum query working); M3 (API) next. See [docs/SPEC.md](docs/SPEC.md) for scope, data model, API and milestones.
+> Status: M1–M3 done (data pipeline, momentum score, JSON API); M4 (dashboard) next. See [docs/SPEC.md](docs/SPEC.md) for scope, data model, API and milestones.
 
 ## Architecture
 
@@ -53,6 +53,8 @@ share     = activity of a language / activity of all tracked repos, over a windo
 momentum  = share in the last W days / share in the W days before − 1
 ```
 
+Pushes are capped at 25 per repo per day, because a handful of bot repos otherwise make up a tenth of all pushes. A language or topic where one repo is more than half of the current activity is marked as concentrated and left off the leaderboard by default: its momentum describes that repo, not the language.
+
 `W` is 30, 60 or 90 days. Using shares rather than raw totals cancels out changes in how much GH Archive collected (it dropped about 38% across the board in June 2025). The weights are a v1 starting point and get validated against real data in milestone M3 (see [SPEC §4](docs/SPEC.md#4-momentum-score)).
 
 ## Stack
@@ -80,7 +82,8 @@ python -m ingest.bigquery --dry-run   # free: shows how much each query would sc
 python -m ingest.bigquery       # build data/daily/*.csv.gz (~96 GB of the 1 TB free tier)
 python -m ingest.load           # pick the top 25,000 repos and load them (~2 min)
 python -m ingest.enrich --workers 4   # language and topics from GitHub (resumable, ~15 min)
-python -m ingest.rollup         # rebuild language/topic/total rollups (~1 s)
+python -m ingest.rollup         # rebuild language/topic/total rollups (~8 s)
+uvicorn app.main:app --reload   # API at http://localhost:8000, docs at /docs
 pytest && ruff check . && ruff format --check .
 ```
 
@@ -90,7 +93,7 @@ pytest && ruff check . && ruff format --check .
 
 - [x] **M1** Ingest pipeline: GH Archive → `repo_daily_activity`
 - [x] **M2** Enrichment + language/topic rollups + momentum query
-- [ ] **M3** JSON API + validating the momentum weights
+- [x] **M3** JSON API + validating the momentum weights
 - [ ] **M4** Dashboard
 - [ ] **M5** Deploy + CI
 - [ ] Phase 2 (optional): live mode from daily star snapshots
