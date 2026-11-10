@@ -6,7 +6,7 @@ This project reads all public GitHub activity from [GH Archive](https://www.ghar
 
 The dataset is a fixed snapshot, **January–September 2025**. A coverage scan of GH Archive found that from late 2025 its star and fork counts no longer reflect real GitHub activity, and from mid-2026 the data is erratic. The details are in [SPEC §8a](docs/SPEC.md#8a-m1-measurements-2026-11-04).
 
-> Status: M1 done (2025 data loaded); M2 next. See [docs/SPEC.md](docs/SPEC.md) for scope, data model, API and milestones.
+> Status: M1 and M2 done (data loaded, enriched, momentum query working); M3 (API) next. See [docs/SPEC.md](docs/SPEC.md) for scope, data model, API and milestones.
 
 ## Architecture
 
@@ -79,7 +79,7 @@ python -m app.migrate           # create tables
 python -m ingest.bigquery --dry-run   # free: shows how much each query would scan
 python -m ingest.bigquery       # build data/daily/*.csv.gz (~96 GB of the 1 TB free tier)
 python -m ingest.load           # pick the top 25,000 repos and load them (~2 min)
-python -m ingest.enrich         # language and topics from GitHub (resumable)
+python -m ingest.enrich --workers 4   # language and topics from GitHub (resumable, ~15 min)
 python -m ingest.rollup         # rebuild language/topic/total rollups (~1 s)
 pytest && ruff check . && ruff format --check .
 ```
@@ -89,7 +89,7 @@ pytest && ruff check . && ruff format --check .
 ## Roadmap
 
 - [x] **M1** Ingest pipeline: GH Archive → `repo_daily_activity`
-- [ ] **M2** Enrichment + language/topic rollups + momentum query
+- [x] **M2** Enrichment + language/topic rollups + momentum query
 - [ ] **M3** JSON API + validating the momentum weights
 - [ ] **M4** Dashboard
 - [ ] **M5** Deploy + CI

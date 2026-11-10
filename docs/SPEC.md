@@ -102,6 +102,8 @@ total_daily    (day DATE PRIMARY KEY, ...same columns...)   -- all tracked repos
 
 A repo counts toward **every** topic it has, so topic totals overlap and must not be summed across topics. `total_daily` counts each repo once, with or without a language.
 
+`topic_daily` only holds topics used by at least `MIN_REPOS` tracked repos.
+
 `pushes_capped` is the sum of `LEAST(pushes, PUSH_CAP)` per repo per day (§4). Rollups keep the raw sums and the capped sum, not a finished activity score, so the weights can change at query time without a rebuild. Changing `PUSH_CAP` needs a rollup rebuild, which takes seconds.
 
 ### 3.2 Keeping the table small: the tracked set
@@ -256,6 +258,8 @@ The README has the full diagram. For the fixed 2025 dataset, ingest → enrich �
 | 2026-11-09 | Cap pushes at 25 per repo per day (`PUSH_CAP`), in the score and in tracked-set selection | Bot repos dominated: one repo was 11% of all pushes. 25 is just above p90 (18) of pushes per repo-day |
 | 2026-11-09 | Rollups store raw sums plus `pushes_capped`, and add `total_daily` | Weights stay adjustable at query time; shares need a total that counts each repo once |
 | 2026-11-09 | Enrichment looks repos up by name and checks `databaseId` | GH Archive gives numeric ids; GraphQL follows renames, and the id check catches reused names |
+| 2026-11-09 | `topic_daily` keeps only topics with at least `MIN_REPOS` tracked repos | All 35,444 topics made 8.2M rows; rarer topics can't reach the leaderboard |
+| 2026-11-09 | Enrichment sends 4 requests in parallel (`--workers 4`) | 8 triggered GitHub's secondary rate limit and was slower |
 | 2026-11-04 | API takes an optional `as_of` date | With a fixed dataset, exploring different end dates is the main way to look at trends |
 
 ## 8a. M1 measurements (2026-11-04)
@@ -358,6 +362,35 @@ After adding `PUSH_CAP = 25` (§4) and reloading: 25,000 tracked repos, 4,860,97
 - The top five repos by activity are now `n8n-io/n8n`, `deepseek-ai/DeepSeek-V3`, `deepseek-ai/DeepSeek-R1`, `x1xhlol/system-prompts-and-models-of-ai-tools` and `codecrafters-io/build-your-own-x`. The bot repos are gone from the top.
 - Activity mix over the whole period: stars 21.8M, forks (×2) 9.1M, capped pushes (×0.5) 5.1M. Pushes are now about 14% of activity, down from 24% uncapped.
 - Total monthly activity falls from about 4.7M (Jan–May) to about 3.1M (Jun–Sep), the same uniform drop the coverage scan found. Shares are meant to cancel it; M3 checks that they do.
+
+### Enrichment and first leaderboard (2026-11-09)
+
+`python -m ingest.enrich --workers 4`, then `ingest.rollup`:
+
+| Metric | Value |
+|---|---|
+| Repos looked up | 25,178 (the tracked set plus 178 cached from the earlier load) |
+| Result | 23,735 ok, 1,443 not found (deleted, private, or the name was reused), 0 errors |
+| Tracked repos with a language | 21,663 of 25,000; they carry 87.3% of all activity |
+| Speed | about 2,000 repos/min with 4 parallel requests. With 8, GitHub's secondary rate limit answered 403 with 60 s pauses and throughput fell to about 900/min |
+| Rollups | 199 languages (50,244 rows), 994 topics with ≥ 20 repos (271,362 rows), rebuilt in 8 s |
+| Database size | 571 MB (`repo_daily_activity` 506 MB, `topic_daily` 40 MB) |
+
+Share of activity over the whole period: Python 23.2%, TypeScript 16.2%, JavaScript 6.7%, Go 5.9%, Rust 5.4%, C++ 4.2%.
+
+30-day leaderboard as of 2025-09-30 (W = 30, FLOOR = 100, MIN_REPOS = 20):
+
+| Gainers | Momentum | Share | Decliners | Momentum | Share |
+|---|---|---|---|---|---|
+| Scala | +158% | 0.06% → 0.16% | Markdown | −24% | 0.75% → 0.57% |
+| Assembly | +157% | 0.07% → 0.19% | Elixir | −22% | 0.14% → 0.11% |
+| TeX | +47% | 0.09% → 0.13% | Dockerfile | −14% | 0.16% → 0.14% |
+| Haskell | +34% | 0.06% → 0.08% | HCL | −14% | 0.12% → 0.11% |
+| Swift | +29% | 0.84% → 1.08% | MDX | −13% | 0.44% → 0.39% |
+
+**Findings:**
+- The numbers are believable, which meets the M2 "done when". The two top gainers are each driven by one repo: `twitter/the-algorithm` gave Scala 2,066 of its September stars, and `microsoft/BASIC-M6502` (open-sourced that month) gave Assembly 2,163. This is the "single viral repo" case from §4, for M3 to handle (for example a cap on one repo's share, or a higher `MIN_REPOS`).
+- Keeping every topic made `topic_daily` 8.2M rows (35,444 topics) and the rollup took 78 s. Topics with fewer than `MIN_REPOS` tracked repos can never reach the leaderboard, so the rollup now drops them: 994 topics, 271k rows, 8 s.
 
 **Problem found: the per-day threshold distorts pushes, PRs and issues.** A tracked repo's pushes only count on days it also gets a star or fork, so 96.5% of pushes are dropped and the push term in `activity` is biased toward star days. See §9 for the fix.
 
